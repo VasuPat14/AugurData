@@ -5,7 +5,7 @@ AugurData is a high-performance visualization platform for analyzing Polygon.io 
 ## Features
 
 - **Multi-timeframe Analysis**: Raw minute data plus Daily, Weekly, Monthly, and Yearly aggregations
-- **Comprehensive Market Coverage: Survivorship-bias-free dataset including market movers, momentum runners, and both listed and delisted securities
+- **Comprehensive Market Coverage**: Survivorship-bias-free dataset including market movers, momentum runners, and both listed and delisted securities
 - **Interactive Data**: Real-time OHLCV and VWAP values on hover
 - **Historical Playback**: Time-slider for chronological market replay
 - **Visual Customization**: Toggle between dark/light themes
