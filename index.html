@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: white;
+      overflow: hidden;
+    }
+    .chart-container {
+      width: 100vw;
+      height: 85vh;
+      background-color: white;
+      position: relative;
+    }
+    .controls {
+      margin: 10px;
+      position: relative;
+      z-index: 10;
+      background-color: rgba(255, 255, 255, 0.85);
+      padding: 8px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      font-size: 12px;
+    }
+    .controls select, .controls button {
+      padding: 6px;
+      margin-right: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    #legend {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      z-index: 1000;
+      font-size: 12px;
+      font-family: sans-serif;
+      line-height: 1.2;
+      font-weight: 300;
+      background-color: rgba(255, 255, 255, 0.9);
+      padding: 6px 10px;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #slider {
+      position: absolute;
+      bottom: 0.35in;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 3in;
+      z-index: 10;
+    }
+    .range-switcher {
+      position: absolute;
+      bottom: 0.12in;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 10px;
+    }
+    .range-switcher button {
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background-color: #f9f9f9;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .range-switcher button.active {
+      background-color: #007bff;
+      color: white;
+      border-color: #007bff;
+    }
+    #theme-toggle {
+      font-size: 16px;
+      cursor: pointer;
+      margin-right: 15px;
+    }
+    #processing-status {
+      color: white;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-left: 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <label id="theme-toggle">🌙</label>
+    <select id="from-date">
+      <option value="">From</option>
+    </select>
+    <select id="to-date">
+      <option value="">To</option>
+    </select>
+    <select id="ticker">
+      <option value="">Select Ticker</option>
+    </select>
+    <button id="fetch">Fetch</button>
+    <div id="processing-status" style="display: none;">
+      Processing: <span id="processing-percent">0</span>%
+    </div>
+  </div>
+
+  <div id="chart-container" class="chart-container">
+    <div id="legend">Hover over the chart to see data</div>
+  </div>
+
+  <input type="range" id="slider" min="0" max="100" value="100">
+  <div class="range-switcher">
+    <button data-range="1D" class="active">Minutes</button>
+    <button data-range="D">Daily</button>
+    <button data-range="1W">W</button>
+    <button data-range="1M">M</button>
+    <button data-range="1Y">Y</button>
+  </div>
+
+  <script>
+    const intervalColors = {
+      '1D': '#2962FF',
+      'D': '#36B37E',  // Green color for day aggregation
+      '1W': 'rgb(225, 87, 90)',
+      '1M': 'rgb(242, 142, 44)',
+      '1Y': 'rgb(164, 89, 209)'
+    };
+
+    const chartOptions = {
+      layout: {
+        background: { type: 'solid', color: 'white' },
+        textColor: 'black',
+        panes: {
+          separatorColor: 'red',
+          separatorHoverColor: '#d1d1d1',
+          separatorThickness: 2,
+          enableResize: true,
+        },
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: true,
+        fixLeftEdge: true,
+        lockVisibleTimeRangeOnResize: true,
+        rightOffset: 5,
+        leftOffset: 15,
+        tickMarkFormatter: (time) => {
+          return formatTimeLabel(time, currentRange);
+        },
+      },
+      rightPriceScale: {
+        scaleMargins: {
+          top: 0.1,
+          bottom: 0.2,
+        },
+      },
+      grid: {
+        vertLines: { color: 'rgba(100, 100, 100, 0.3)', visible: true },
+        horzLines: { color: 'rgba(100, 100, 100, 0.3)', visible: true },
+      },
+      localization: {
+        timeFormatter: (time) => {
+          return formatTimeLabel(time, currentRange);
+        }
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: {
+          width: 1,
+          color: 'rgba(150, 150, 150, 0.5)',
+          labelVisible: true,
+        },
+        horzLine: {
+          width: 1,
+          color: 'rgba(150, 150, 150, 0.5)',
+          labelVisible: true,
+        },
+      }
+    };
+
+    const chart = LightweightCharts.createChart(document.getElementById('chart-container'), chartOptions);
+    const candlestickSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {}, 0);
+    const volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
+      priceFormat: { type: 'volume' },
+      color: '#26a69a',
+    }, 1);
+    
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: {
+        top: 0.1,
+        bottom: 0.01,
+      },
+    });
+
+    let allData = [];
+    let volumeData = [];
+    let vwapData = [];
+    let currentTicker = '';
+    let currentStartDate = '';
+    let currentEndDate = '';
+    let currentRange = '1D';
+    let dataCache = new Map();
+    const timeToDataMap = new Map();
+    
+    let eventSource = null;
+    let clientId = null;
+    let sseConnected = false;
+
+    function formatTimeLabel(time, range) {
+      const date = new Date(time * 1000);
+      
+      switch(range) {
+        case '1D':
+          return date.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            hour: '2-digit',
+            minute: '2-digit'
+          });
+        case 'D':
+          return date.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            month: 'short',
+            day: 'numeric'
+          });
+        case '1W':
+          return date.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            month: 'short',
+            day: 'numeric',
+            year: '2-digit'
+          });
+        case '1M':
+          return date.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            month: 'short',
+            year: '2-digit'
+          });
+        case '1Y':
+          return date.getFullYear().toString();
+        default:
+          return date.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            hour: '2-digit',
+            minute: '2-digit'
+          });
+      }
+    }
+
+    function connectSSE() {
+      if (eventSource) {
+        eventSource.close();
+      }
+      
+      eventSource = new EventSource('/sse-connect');
+      
+      eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'connected') {
+          clientId = data.client_id;
+          sseConnected = true;
+          console.log('Connected to SSE with client ID:', clientId);
+        } else if (data.type === 'progress') {
+          updateProgressIndicator(data.data.percentage);
+          console.log(`Processing: ${data.data.completed}/${data.data.total} files (${Math.round(data.data.percentage)}%)`);
+        } else if (data.type === 'partial_data') {
+          updateChartsWithPartialData(data.data);
+        } else if (data.type === 'complete') {
+          hideProgressIndicator();
+          updateChartsWithFinalData(data.data);
+        } else if (data.type === 'error') {
+          showErrorMessage(data.data.message);
+          hideProgressIndicator();
+        } else if (data.type === 'processing_summary') {
+          const summary = data.data;
+          console.log(`Processing summary: ${summary.successful_files.length} files successful, ${summary.failed_files.length} files failed`);
+          
+          if (summary.failed_files.length > 0) {
+            const dateString = summary.failed_files.join(', ');
+            const currentLegend = document.getElementById('legend').innerHTML;
+            document.getElementById('legend').innerHTML = 
+              `<div style="color: #d32f2f; margin-bottom: 4px;">Failed to process dates: ${dateString}</div>` + 
+              currentLegend;
+          }
+        }
+      };
+      
+      eventSource.onerror = function() {
+        console.error('SSE connection error');
+        sseConnected = false;
+        setTimeout(connectSSE, 3000);
+      };
+    }
+
+    async function fetchData(range) {
+      const ticker = document.getElementById('ticker').value;
+      const fromDate = document.getElementById('from-date').value;
+      let toDate = document.getElementById('to-date').value;
+      
+      if (!ticker || !fromDate) {
+        alert('Please select a ticker and start date.');
+        return;
+      }
+      
+      if (toDate === "" || !toDate) {
+        toDate = fromDate;
+        document.getElementById('to-date').value = fromDate;
+      }
+      
+      currentTicker = ticker;
+      currentStartDate = fromDate;
+      currentEndDate = toDate;
+      currentRange = range;
+      
+      console.log(`Fetching data: ticker=${ticker}, range=${range}, dates=${fromDate} to ${toDate}`);
+      const cacheKey = `${ticker}-${fromDate}-${toDate}-${range}`;
+      
+      if (dataCache.has(cacheKey)) {
+        console.log(`Using cached data for ${cacheKey}`);
+        const cachedData = dataCache.get(cacheKey);
+        
+        allData = JSON.parse(JSON.stringify(cachedData.candlestick));
+        volumeData = JSON.parse(JSON.stringify(cachedData.volume));
+        vwapData = JSON.parse(JSON.stringify(cachedData.vwap));
+        
+        console.log(`Retrieved ${allData.length} data points from cache`);
+        timeToDataMap.clear();
+        updateChartData(range);
+        return;
+      }
+
+      try {
+        resetChartData();
+        document.getElementById('legend').innerHTML = 'Loading data...';
+        showProgressIndicator();
+        
+        if (!clientId) {
+          let retries = 0;
+          const maxRetries = 5;
+          while (!sseConnected && retries < maxRetries) {
+            console.log(`Waiting for SSE connection (attempt ${retries + 1}/${maxRetries})...`);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            retries++;
+          }
+          
+          if (!sseConnected) {
+            console.warn('SSE connection not established. Reconnecting...');
+            connectSSE();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            if (!clientId) {
+              throw new Error('Could not establish SSE connection. Please try again.');
+            }
+          }
+        }
+        
+        const response = await fetch(`/one_minute_data_range?ticker=${ticker}&start_date=${fromDate}&end_date=${toDate}&range=${range}&client_id=${clientId}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log(`Received response for ${range}`);
+
+        if (data.error) {
+          showErrorMessage(data.error);
+          hideProgressIndicator();
+          return;
+        }
+
+        if (data.status === "processing_started") {
+          console.log(`Processing started in background: ${data.files_count} files`);
+          document.getElementById('legend').innerHTML = 'Processing data...';
+          return;
+        }
+
+        allData = data.candlestick;
+        volumeData = data.volume;
+        vwapData = data.vwap;
+
+        console.log(`Loaded ${allData.length} candlesticks for ${range} view`);
+        
+        dataCache.set(cacheKey, {
+          candlestick: JSON.parse(JSON.stringify(allData)),
+          volume: JSON.parse(JSON.stringify(volumeData)),
+          vwap: JSON.parse(JSON.stringify(vwapData))
+        });
+        
+        console.log(`Saved data to cache with key: ${cacheKey}`);
+        updateChartData(range);
+        hideProgressIndicator();
+      } catch (error) {
+        console.error('Failed to fetch data:', error);
+        document.getElementById('legend').innerHTML = `Failed to load data: ${error.message}`;
+        hideProgressIndicator();
+      }
+    }
+    
+    function updateChartData(range) {
+      mapTimeToData();
+      
+      const coloredVolumeData = volumeData.map((vol, index) => {
+        if (index < allData.length) {
+          return {
+            ...vol,
+            color: allData[index].close >= allData[index].open ? '#26a69a' : '#ef5350'
+          };
+        }
+        return vol;
+      });
+      
+      candlestickSeries.setData(allData);
+      volumeSeries.setData(coloredVolumeData);
+      
+      if (vwapData && vwapData.length > 0 && vwapData.some(point => point.value !== null)) {
+        if (window.vwapSeries) {
+          chart.removeSeries(window.vwapSeries);
+        }
+        
+        window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
+          color: '#2962FF',
+          lineWidth: 2,
+          priceScaleId: 'right',
+        }, 0);
+        
+        const filteredVwapData = vwapData.filter(point => point.value !== null);
+        window.vwapSeries.setData(filteredVwapData);
+      }
+      
+      if (allData.length > 0) {
+        const firstDataPoint = timeToDataMap.get(allData[0].time);
+        if (firstDataPoint) {
+          updateLegend(
+            firstDataPoint.candle,
+            firstDataPoint.volume,
+            firstDataPoint.vwap
+          );
+        }
+      }
+
+      chart.timeScale().fitContent();
+      updateSlider();
+      updateTimeScaleFormat(range);
+      
+      document.querySelectorAll('.range-switcher button').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.getAttribute('data-range') === range) {
+          btn.classList.add('active');
+        }
+      });
+      
+      console.log(`Data Points: ${allData.length}`);
+    }
+    
+    function resetChartData() {
+      candlestickSeries.setData([]);
+      volumeSeries.setData([]);
+      
+      if (window.vwapSeries) {
+        try {
+          chart.removeSeries(window.vwapSeries);
+          window.vwapSeries = null;
+        } catch (e) {
+          console.error('Error removing VWAP series:', e);
+        }
+      }
+      
+      allData = [];
+      volumeData = [];
+      vwapData = [];
+      timeToDataMap.clear();
+      
+      document.getElementById('legend').innerHTML = 'Loading...';
+    }
+    
+    function mapTimeToData() {
+      timeToDataMap.clear();
+      allData.forEach((candle, index) => {
+        timeToDataMap.set(candle.time, {
+          candle: candle,
+          volume: volumeData[index] || { value: null },
+          vwap: vwapData[index] || { value: null }
+        });
+      });
+    }
+    
+    function updateTimeScaleFormat(range) {
+      chart.applyOptions({
+        timeScale: {
+          tickMarkFormatter: (time) => {
+            return formatTimeLabel(time, range);
+          }
+        },
+        localization: {
+          timeFormatter: (time) => {
+            return formatTimeLabel(time, range);
+          }
+        }
+      });
+    }
+    
+    function updateSlider() {
+      const slider = document.getElementById('slider');
+      slider.max = allData.length - 1;
+      slider.value = slider.max;
+      
+      const newSlider = slider.cloneNode(true);
+      slider.parentNode.replaceChild(newSlider, slider);
+      
+      newSlider.addEventListener('input', () => {
+        const index = parseInt(newSlider.value);
+        if (index >= 0 && index < allData.length) {
+          const visibleCandles = allData.slice(0, index + 1);
+          const visibleVolumes = volumeData.slice(0, index + 1);
+          
+          const coloredVolumeData = visibleVolumes.map((vol, i) => {
+            if (i < visibleCandles.length) {
+              return {
+                ...vol,
+                color: visibleCandles[i].close >= visibleCandles[i].open ? '#26a69a' : '#ef5350'
+              };
+            }
+            return vol;
+          });
+          
+          candlestickSeries.setData(visibleCandles);
+          volumeSeries.setData(coloredVolumeData);
+          
+          if (window.vwapSeries && vwapData && vwapData.length > 0) {
+            const visibleVwap = vwapData.slice(0, index + 1).filter(point => point.value !== null);
+            window.vwapSeries.setData(visibleVwap);
+          }
+          
+          if (visibleCandles.length > 0) {
+            const visibleRange = {
+              from: visibleCandles[0].time,
+              to: visibleCandles[visibleCandles.length - 1].time,
+            };
+            chart.timeScale().setVisibleRange(visibleRange);
+          }
+          
+          const dataPoint = timeToDataMap.get(allData[index].time);
+          if (dataPoint) {
+            updateLegend(dataPoint.candle, dataPoint.volume, dataPoint.vwap);
+          }
+        }
+      });
+    }
+
+    function enableRangeSwitcher() {
+      const rangeButtons = document.querySelectorAll('.range-switcher button');
+      rangeButtons.forEach(button => {
+        const newButton = button.cloneNode(true);
+        button.parentNode.replaceChild(newButton, button);
+      });
+      
+      document.querySelectorAll('.range-switcher button').forEach(button => {
+        button.addEventListener('click', () => {
+          const ticker = document.getElementById('ticker').value;
+          const fromDate = document.getElementById('from-date').value;
+          
+          if (!ticker || !fromDate) {
+            alert('Please select a ticker and start date first, then select a range.');
+            return;
+          }
+          
+          document.querySelectorAll('.range-switcher button').forEach(btn => {
+            btn.classList.remove('active');
+          });
+          
+          button.classList.add('active');
+          
+          const range = button.getAttribute('data-range');
+          console.log(`Range button clicked: ${range}`);
+          fetchData(range);
+        });
+      });
+      
+      if (!document.querySelector('.range-switcher button.active')) {
+        document.querySelector('[data-range="1D"]').classList.add('active');
+      }
+    }
+
+    function showProgressIndicator() {
+      const status = document.getElementById('processing-status');
+      status.style.display = 'inline-block';
+      document.getElementById('processing-percent').textContent = '0';
+    }
+
+    function updateProgressIndicator(percentage) {
+      const percentEl = document.getElementById('processing-percent');
+      if (percentEl) {
+        percentEl.textContent = Math.round(percentage);
+      }
+    }
+
+    function hideProgressIndicator() {
+      const status = document.getElementById('processing-status');
+      status.style.display = 'none';
+    }
+
+    function updateChartsWithPartialData(data) {
+      console.log('Received partial data update');
+      
+      if (data.candlestick && data.candlestick.length > 0) {
+        allData = data.candlestick;
+        candlestickSeries.setData(data.candlestick);
+      }
+      
+      if (data.volume && data.volume.length > 0) {
+        volumeData = data.volume;
+        
+        const coloredVolumeData = data.volume.map((vol, index) => {
+          if (index < data.candlestick.length) {
+            return {
+              ...vol,
+              color: data.candlestick[index].close >= data.candlestick[index].open ? '#26a69a' : '#ef5350'
+            };
+          }
+          return vol;
+        });
+        
+        volumeSeries.setData(coloredVolumeData);
+      }
+      
+      if (data.vwap && data.vwap.length > 0) {
+        vwapData = data.vwap;
+        
+        if (window.vwapSeries) {
+          chart.removeSeries(window.vwapSeries);
+        }
+        
+        window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
+          color: '#2962FF',
+          lineWidth: 2,
+          priceScaleId: 'right',
+        }, 0);
+        
+        const filteredVwapData = data.vwap.filter(point => point.value !== null);
+        window.vwapSeries.setData(filteredVwapData);
+      }
+      
+      mapTimeToData();
+      chart.timeScale().fitContent();
+      
+      const slider = document.getElementById('slider');
+      if (slider && allData.length > 0) {
+        slider.max = allData.length - 1;
+        slider.value = slider.max;
+      }
+      
+      console.log(`Data Points: ${data.candlestick.length}`);
+    }
+
+    function updateChartsWithFinalData(data) {
+      console.log('Received final data');
+      
+      allData = data.candlestick;
+      volumeData = data.volume;
+      vwapData = data.vwap;
+      
+      updateChartData(currentRange);
+      
+      const cacheKey = `${currentTicker}-${currentStartDate}-${currentEndDate}-${currentRange}`;
+      dataCache.set(cacheKey, {
+        candlestick: JSON.parse(JSON.stringify(data.candlestick)),
+        volume: JSON.parse(JSON.stringify(data.volume)),
+        vwap: JSON.parse(JSON.stringify(data.vwap)),
+        processed_dates: data.processed_dates || []
+      });
+      
+      console.log(`Saved complete data to cache with key: ${cacheKey}`);
+      
+      if (data.processed_dates && data.processed_dates.length > 0) {
+        if (currentStartDate !== currentEndDate) {
+          const currentLegend = document.getElementById('legend').innerHTML;
+          const dateInfo = `<div style="color: #388e3c; font-size: 10px; margin-top: 4px;">Dates included: ${data.processed_dates.join(', ')}</div>`;
+          
+          if (!currentLegend.includes('Dates included:')) {
+            document.getElementById('legend').innerHTML += dateInfo;
+          }
+        }
+      }
+    }
+
+    function showErrorMessage(message) {
+      document.getElementById('legend').innerHTML = `Error: ${message}`;
+      console.error(`Error processing data: ${message}`);
+    }
+
+    // Updated legend function to correctly display dates
+    function updateLegend(candleData, volumeData, vwapData) {
+      const legend = document.getElementById('legend');
+      if (candleData) {
+        // Convert timestamp to date object and ensure NY timezone
+        const timestamp = candleData.time * 1000;
+        const utcDate = new Date(timestamp);
+        
+        // Format the date consistent with server-side processing
+        const nyOptions = { timeZone: 'America/New_York' };
+        const nyMonth = utcDate.toLocaleString('en-US', {...nyOptions, month: 'numeric'});
+        const nyDay = utcDate.toLocaleString('en-US', {...nyOptions, day: 'numeric'});
+        const nyTime = utcDate.toLocaleString('en-US', {...nyOptions, hour: '2-digit', minute: '2-digit', hour12: true});
+        
+        // Format MM/DD
+        const dateStr = `${nyMonth.padStart(2, '0')}/${nyDay.padStart(2, '0')}`;
+        
+        legend.innerHTML = `
+          <span style="font-weight:bold">${currentTicker}</span> | 
+          Open: ${candleData.open?.toFixed(2) || 'N/A'} | 
+          High: ${candleData.high?.toFixed(2) || 'N/A'} | 
+          Low: ${candleData.low?.toFixed(2) || 'N/A'} | 
+          Close: ${candleData.close?.toFixed(2) || 'N/A'} | 
+          Volume: ${volumeData?.value?.toLocaleString() || 'N/A'} | 
+          VWAP: ${vwapData?.value ? vwapData.value.toFixed(2) : 'N/A'} | 
+          ${dateStr} ${nyTime}
+        `;
+      } else {
+        legend.innerHTML = 'No data at this point.';
+      }
+    }
+
+    function handleCrosshairMove(param) {
+      if (param.time) {
+        const data = timeToDataMap.get(param.time);
+        if (data) {
+          updateLegend(data.candle, data.volume, data.vwap);
+        }
+      }
+    }
+
+    chart.subscribeCrosshairMove(handleCrosshairMove);
+
+    document.getElementById('fetch').addEventListener('click', () => {
+      const ticker = document.getElementById('ticker').value;
+      const fromDate = document.getElementById('from-date').value;
+      
+      if (!ticker || !fromDate) {
+        alert('Please select a ticker and start date.');
+        return;
+      }
+      
+      let activeRange = '1D';
+      const activeButton = document.querySelector('.range-switcher button.active');
+      if (activeButton) {
+        activeRange = activeButton.getAttribute('data-range');
+      } else {
+        document.querySelectorAll('.range-switcher button').forEach(btn => {
+          btn.classList.remove('active');
+        });
+        document.querySelector('[data-range="1D"]').classList.add('active');
+      }
+      
+      fetchData(activeRange);
+    });
+
+    document.getElementById('ticker').addEventListener('change', () => {
+      document.querySelectorAll('.range-switcher button').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      document.querySelector('[data-range="1D"]').classList.add('active');
+    });
+
+    fetch('/available_dates')
+      .then(response => response.json())
+      .then(data => {
+        const fromDateSelect = document.getElementById('from-date');
+        const toDateSelect = document.getElementById('to-date');
+        data.dates.forEach(date => {
+          addOption(fromDateSelect, date);
+          addOption(toDateSelect, date);
+        });
+      });
+
+    document.getElementById('from-date').addEventListener('change', () => {
+      const fromDate = document.getElementById('from-date').value;
+      const toDateSelect = document.getElementById('to-date');
+      toDateSelect.innerHTML = '<option value="">To</option>';
+
+      if (!fromDate) return;
+
+      fetch('/available_dates')
+        .then(response => response.json())
+        .then(data => {
+          data.dates.forEach(date => {
+            if (date >= fromDate) {
+              addOption(toDateSelect, date);
+            }
+          });
+        });
+
+      fetch(`/available_tickers?date=${fromDate}`)
+        .then(response => response.json())
+        .then(data => {
+          const tickerSelect = document.getElementById('ticker');
+          tickerSelect.innerHTML = '<option value="">Select Ticker</option>';
+          data.tickers.forEach(ticker => addOption(tickerSelect, ticker));
+        });
+    });
+
+    function addOption(select, value) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      enableRangeSwitcher();
+      connectSSE();
+      
+      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.body.style.backgroundColor = '#222';
+        document.querySelector('.controls').style.backgroundColor = 'rgba(34, 34, 34, 0.85)';
+        themeToggle.textContent = '☀️';
+        
+        chart.applyOptions({ 
+          layout: { 
+            background: { type: 'solid', color: '#222' }, 
+            textColor: '#DDD' 
+          },
+          grid: {
+            vertLines: { color: 'rgba(200, 200, 200, 0.2)' },
+            horzLines: { color: 'rgba(200, 200, 200, 0.2)' },
+          }
+        });
+      }
+    });
+
+    window.addEventListener('resize', () => {
+      chart.resize(
+        document.getElementById('chart-container').clientWidth,
+        document.getElementById('chart-container').clientHeight
+      );
+    });
+
+    const themeToggle = document.getElementById('theme-toggle');
+    themeToggle.addEventListener('click', () => {
+      const isDarkMode = document.body.style.backgroundColor === 'rgb(34, 34, 34)';
+      if (isDarkMode) {
+        document.body.style.backgroundColor = 'white';
+        document.querySelector('.controls').style.backgroundColor = 'rgba(255, 255, 255, 0.85)';
+        chart.applyOptions({ 
+          layout: { 
+            background: { type: 'solid', color: 'white' }, 
+            textColor: 'black' 
+          },
+          grid: {
+            vertLines: { color: 'rgba(100, 100, 100, 0.3)' },
+            horzLines: { color: 'rgba(100, 100, 100, 0.3)' },
+          },
+          crosshair: {
+            vertLine: {
+              color: 'rgba(150, 150, 150, 0.5)',
+            },
+            horzLine: {
+              color: 'rgba(150, 150, 150, 0.5)',
+            }
+          }
+        });
+        themeToggle.textContent = '🌙';
+      } else {
+        document.body.style.backgroundColor = '#222';
+        document.querySelector('.controls').style.backgroundColor = 'rgba(34, 34, 34, 0.85)';
+        chart.applyOptions({ 
+          layout: { 
+            background: { type: 'solid', color: '#222' }, 
+            textColor: '#DDD' 
+          },
+          grid: {
+            vertLines: { color: 'rgba(200, 200, 200, 0.2)' },
+            horzLines: { color: 'rgba(200, 200, 200, 0.2)' },
+          },
+          crosshair: {
+            vertLine: {
+              color: 'rgba(200, 200, 200, 0.3)',
+            },
+            horzLine: {
+              color: 'rgba(200, 200, 200, 0.3)',
+            }
+          }
+        });
+        themeToggle.textContent = '☀️';
+      }
+    });
+  </script>
+</body>
+</html>
