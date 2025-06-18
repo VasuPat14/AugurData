@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stock Chart</title>
   <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     body {
@@ -28,6 +29,8 @@
       display: flex;
       align-items: center;
       font-size: 12px;
+      flex-wrap: wrap;
+      gap: 8px;
     }
     .controls select, .controls button {
       padding: 6px;
@@ -35,6 +38,7 @@
       border: 1px solid #ccc;
       border-radius: 4px;
       font-size: 12px;
+      cursor: pointer;
     }
     #legend {
       position: absolute;
@@ -129,7 +133,7 @@
   <script>
     const intervalColors = {
       '1D': '#2962FF',
-      'D': '#36B37E',  // Green color for day aggregation
+      'D': '#36B37E',
       '1W': 'rgb(225, 87, 90)',
       '1M': 'rgb(242, 142, 44)',
       '1Y': 'rgb(164, 89, 209)'
@@ -186,21 +190,21 @@
         },
       }
     };
-
     const chart = LightweightCharts.createChart(document.getElementById('chart-container'), chartOptions);
-    const candlestickSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {}, 0);
+
+    const candlestickSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { priceScaleId: 'right' }, 0);
     const volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
       priceFormat: { type: 'volume' },
       color: '#26a69a',
+      priceScaleId: 'volume',
     }, 1);
-    
+
     volumeSeries.priceScale().applyOptions({
       scaleMargins: {
         top: 0.1,
         bottom: 0.01,
       },
     });
-
     let allData = [];
     let volumeData = [];
     let vwapData = [];
@@ -210,14 +214,11 @@
     let currentRange = '1D';
     let dataCache = new Map();
     const timeToDataMap = new Map();
-    
     let eventSource = null;
     let clientId = null;
     let sseConnected = false;
-
     function formatTimeLabel(time, range) {
       const date = new Date(time * 1000);
-      
       switch(range) {
         case '1D':
           return date.toLocaleString('en-US', {
@@ -261,29 +262,29 @@
       }
       
       eventSource = new EventSource('/sse-connect');
-      
       eventSource.onmessage = function(event) {
         const data = JSON.parse(event.data);
-        
         if (data.type === 'connected') {
           clientId = data.client_id;
           sseConnected = true;
-          console.log('Connected to SSE with client ID:', clientId);
+          console.log('Frontend Log: SSE Connected. Client ID:', clientId);
         } else if (data.type === 'progress') {
           updateProgressIndicator(data.data.percentage);
-          console.log(`Processing: ${data.data.completed}/${data.data.total} files (${Math.round(data.data.percentage)}%)`);
+          console.log(`Frontend Log: Processing Progress: ${Math.round(data.data.percentage)}%`);
         } else if (data.type === 'partial_data') {
+          console.log('Frontend Log: Received partial data.');
           updateChartsWithPartialData(data.data);
         } else if (data.type === 'complete') {
+          console.log('Frontend Log: Received complete data.');
           hideProgressIndicator();
           updateChartsWithFinalData(data.data);
         } else if (data.type === 'error') {
+          console.error('Frontend Error: Server Error:', data.data.message);
           showErrorMessage(data.data.message);
           hideProgressIndicator();
         } else if (data.type === 'processing_summary') {
           const summary = data.data;
-          console.log(`Processing summary: ${summary.successful_files.length} files successful, ${summary.failed_files.length} files failed`);
-          
+          console.log(`Frontend Log: Processing Summary - Successful: ${summary.successful_files.length}, Failed: ${summary.failed_files.length}`);
           if (summary.failed_files.length > 0) {
             const dateString = summary.failed_files.join(', ');
             const currentLegend = document.getElementById('legend').innerHTML;
@@ -293,15 +294,15 @@
           }
         }
       };
-      
       eventSource.onerror = function() {
-        console.error('SSE connection error');
+        console.error('Frontend Error: SSE connection failed or disconnected.');
         sseConnected = false;
         setTimeout(connectSSE, 3000);
       };
     }
 
     async function fetchData(range) {
+      console.log(`Frontend Log: Initiating fetch for range: ${range}`);
       const ticker = document.getElementById('ticker').value;
       const fromDate = document.getElementById('from-date').value;
       let toDate = document.getElementById('to-date').value;
@@ -321,18 +322,14 @@
       currentEndDate = toDate;
       currentRange = range;
       
-      console.log(`Fetching data: ticker=${ticker}, range=${range}, dates=${fromDate} to ${toDate}`);
       const cacheKey = `${ticker}-${fromDate}-${toDate}-${range}`;
-      
       if (dataCache.has(cacheKey)) {
-        console.log(`Using cached data for ${cacheKey}`);
+        console.log(`Frontend Log: Serving data from client-side cache for key: ${cacheKey}.`);
         const cachedData = dataCache.get(cacheKey);
-        
         allData = JSON.parse(JSON.stringify(cachedData.candlestick));
         volumeData = JSON.parse(JSON.stringify(cachedData.volume));
         vwapData = JSON.parse(JSON.stringify(cachedData.vwap));
         
-        console.log(`Retrieved ${allData.length} data points from cache`);
         timeToDataMap.clear();
         updateChartData(range);
         return;
@@ -344,16 +341,16 @@
         showProgressIndicator();
         
         if (!clientId) {
+          console.log('Frontend Log: Waiting for SSE connection before fetching data.');
           let retries = 0;
           const maxRetries = 5;
           while (!sseConnected && retries < maxRetries) {
-            console.log(`Waiting for SSE connection (attempt ${retries + 1}/${maxRetries})...`);
             await new Promise(resolve => setTimeout(resolve, 500));
             retries++;
           }
           
           if (!sseConnected) {
-            console.warn('SSE connection not established. Reconnecting...');
+            console.warn('Frontend Warning: SSE not connected after retries. Attempting reconnect.');
             connectSSE();
             await new Promise(resolve => setTimeout(resolve, 1000));
             
@@ -363,14 +360,14 @@
           }
         }
         
+        console.log(`Frontend Log: Sending request to server for data: ticker=${ticker}, dates=${fromDate} to ${toDate}, range=${range}, client_id=${clientId}`);
         const response = await fetch(`/one_minute_data_range?ticker=${ticker}&start_date=${fromDate}&end_date=${toDate}&range=${range}&client_id=${clientId}`);
-        
         if (!response.ok) {
           throw new Error(`HTTP error! Status: ${response.status}`);
         }
         
         const data = await response.json();
-        console.log(`Received response for ${range}`);
+        console.log(`Frontend Log: Initial response from /one_minute_data_range received.`);
 
         if (data.error) {
           showErrorMessage(data.error);
@@ -379,36 +376,34 @@
         }
 
         if (data.status === "processing_started") {
-          console.log(`Processing started in background: ${data.files_count} files`);
           document.getElementById('legend').innerHTML = 'Processing data...';
+          console.log(`Frontend Log: Server reported processing started for ${data.files_count} files. Waiting for SSE updates.`);
           return;
         }
 
+        console.log('Frontend Log: Direct data received (not processing_started). Updating chart.');
         allData = data.candlestick;
         volumeData = data.volume;
         vwapData = data.vwap;
-
-        console.log(`Loaded ${allData.length} candlesticks for ${range} view`);
         
         dataCache.set(cacheKey, {
           candlestick: JSON.parse(JSON.stringify(allData)),
           volume: JSON.parse(JSON.stringify(volumeData)),
           vwap: JSON.parse(JSON.stringify(vwapData))
         });
-        
-        console.log(`Saved data to cache with key: ${cacheKey}`);
         updateChartData(range);
         hideProgressIndicator();
+        console.log(`Frontend Log: Chart data loaded and displayed directly.`);
       } catch (error) {
-        console.error('Failed to fetch data:', error);
+        console.error('Frontend Error: Failed to fetch or process data:', error);
         document.getElementById('legend').innerHTML = `Failed to load data: ${error.message}`;
         hideProgressIndicator();
       }
     }
     
     function updateChartData(range) {
+      console.log('Frontend Log: Updating chart series data.');
       mapTimeToData();
-      
       const coloredVolumeData = volumeData.map((vol, index) => {
         if (index < allData.length) {
           return {
@@ -418,23 +413,24 @@
         }
         return vol;
       });
-      
       candlestickSeries.setData(allData);
       volumeSeries.setData(coloredVolumeData);
       
       if (vwapData && vwapData.length > 0 && vwapData.some(point => point.value !== null)) {
-        if (window.vwapSeries) {
-          chart.removeSeries(window.vwapSeries);
+        if (!window.vwapSeries) {
+          window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
+            color: '#2962FF',
+            lineWidth: 2,
+            priceScaleId: 'right',
+          }, 0);
         }
-        
-        window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
-          color: '#2962FF',
-          lineWidth: 2,
-          priceScaleId: 'right',
-        }, 0);
-        
         const filteredVwapData = vwapData.filter(point => point.value !== null);
         window.vwapSeries.setData(filteredVwapData);
+      } else {
+        if (window.vwapSeries) {
+          chart.removeSeries(window.vwapSeries);
+          window.vwapSeries = null;
+        }
       }
       
       if (allData.length > 0) {
@@ -446,20 +442,20 @@
             firstDataPoint.vwap
           );
         }
+      } else {
+          document.getElementById('legend').innerHTML = 'No data available for this selection.';
       }
 
       chart.timeScale().fitContent();
       updateSlider();
       updateTimeScaleFormat(range);
-      
       document.querySelectorAll('.range-switcher button').forEach(btn => {
         btn.classList.remove('active');
         if (btn.getAttribute('data-range') === range) {
           btn.classList.add('active');
         }
       });
-      
-      console.log(`Data Points: ${allData.length}`);
+      console.log(`Frontend Log: Chart updated with ${allData.length} data points.`);
     }
     
     function resetChartData() {
@@ -471,7 +467,7 @@
           chart.removeSeries(window.vwapSeries);
           window.vwapSeries = null;
         } catch (e) {
-          console.error('Error removing VWAP series:', e);
+          console.error('Frontend Error: Error removing VWAP series:', e);
         }
       }
       
@@ -481,6 +477,7 @@
       timeToDataMap.clear();
       
       document.getElementById('legend').innerHTML = 'Loading...';
+      console.log('Frontend Log: Chart data reset.');
     }
     
     function mapTimeToData() {
@@ -511,17 +508,17 @@
     
     function updateSlider() {
       const slider = document.getElementById('slider');
-      slider.max = allData.length - 1;
+      slider.max = allData.length > 0 ? allData.length - 1 : 0;
       slider.value = slider.max;
       
       const newSlider = slider.cloneNode(true);
       slider.parentNode.replaceChild(newSlider, slider);
-      
       newSlider.addEventListener('input', () => {
         const index = parseInt(newSlider.value);
         if (index >= 0 && index < allData.length) {
           const visibleCandles = allData.slice(0, index + 1);
           const visibleVolumes = volumeData.slice(0, index + 1);
+          const visibleVwap = vwapData.slice(0, index + 1);
           
           const coloredVolumeData = visibleVolumes.map((vol, i) => {
             if (i < visibleCandles.length) {
@@ -537,8 +534,8 @@
           volumeSeries.setData(coloredVolumeData);
           
           if (window.vwapSeries && vwapData && vwapData.length > 0) {
-            const visibleVwap = vwapData.slice(0, index + 1).filter(point => point.value !== null);
-            window.vwapSeries.setData(visibleVwap);
+            const filteredVwap = visibleVwap.filter(point => point.value !== null);
+            window.vwapSeries.setData(filteredVwap);
           }
           
           if (visibleCandles.length > 0) {
@@ -563,14 +560,13 @@
         const newButton = button.cloneNode(true);
         button.parentNode.replaceChild(newButton, button);
       });
-      
       document.querySelectorAll('.range-switcher button').forEach(button => {
         button.addEventListener('click', () => {
           const ticker = document.getElementById('ticker').value;
           const fromDate = document.getElementById('from-date').value;
           
           if (!ticker || !fromDate) {
-            alert('Please select a ticker and start date first, then select a range.');
+            alert('Please select a ticker and start date.');
             return;
           }
           
@@ -581,14 +577,10 @@
           button.classList.add('active');
           
           const range = button.getAttribute('data-range');
-          console.log(`Range button clicked: ${range}`);
+          currentRange = range;
           fetchData(range);
         });
       });
-      
-      if (!document.querySelector('.range-switcher button.active')) {
-        document.querySelector('[data-range="1D"]').classList.add('active');
-      }
     }
 
     function showProgressIndicator() {
@@ -610,8 +602,7 @@
     }
 
     function updateChartsWithPartialData(data) {
-      console.log('Received partial data update');
-      
+      console.log('Frontend Log: Updating chart with partial data.');
       if (data.candlestick && data.candlestick.length > 0) {
         allData = data.candlestick;
         candlestickSeries.setData(data.candlestick);
@@ -619,12 +610,11 @@
       
       if (data.volume && data.volume.length > 0) {
         volumeData = data.volume;
-        
         const coloredVolumeData = data.volume.map((vol, index) => {
           if (index < data.candlestick.length) {
             return {
               ...vol,
-              color: data.candlestick[index].close >= data.candlestick[index].open ? '#26a69a' : '#ef5350'
+              color: allData[index].close >= allData[index].open ? '#26a69a' : '#ef5350'
             };
           }
           return vol;
@@ -635,17 +625,13 @@
       
       if (data.vwap && data.vwap.length > 0) {
         vwapData = data.vwap;
-        
-        if (window.vwapSeries) {
-          chart.removeSeries(window.vwapSeries);
+        if (!window.vwapSeries) {
+          window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
+            color: '#2962FF',
+            lineWidth: 2,
+            priceScaleId: 'right',
+          }, 0);
         }
-        
-        window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
-          color: '#2962FF',
-          lineWidth: 2,
-          priceScaleId: 'right',
-        }, 0);
-        
         const filteredVwapData = data.vwap.filter(point => point.value !== null);
         window.vwapSeries.setData(filteredVwapData);
       }
@@ -658,13 +644,10 @@
         slider.max = allData.length - 1;
         slider.value = slider.max;
       }
-      
-      console.log(`Data Points: ${data.candlestick.length}`);
     }
 
     function updateChartsWithFinalData(data) {
-      console.log('Received final data');
-      
+      console.log('Frontend Log: Final data received from server. Updating chart.');
       allData = data.candlestick;
       volumeData = data.volume;
       vwapData = data.vwap;
@@ -673,19 +656,17 @@
       
       const cacheKey = `${currentTicker}-${currentStartDate}-${currentEndDate}-${currentRange}`;
       dataCache.set(cacheKey, {
-        candlestick: JSON.parse(JSON.stringify(data.candlestick)),
-        volume: JSON.parse(JSON.stringify(data.volume)),
-        vwap: JSON.parse(JSON.stringify(data.vwap)),
+        candlestick: JSON.parse(JSON.stringify(allData)),
+        volume: JSON.parse(JSON.stringify(volumeData)),
+        vwap: JSON.parse(JSON.stringify(vwapData)),
         processed_dates: data.processed_dates || []
       });
-      
-      console.log(`Saved complete data to cache with key: ${cacheKey}`);
+      console.log(`Frontend Log: Data cached client-side for key: ${cacheKey}.`);
       
       if (data.processed_dates && data.processed_dates.length > 0) {
         if (currentStartDate !== currentEndDate) {
           const currentLegend = document.getElementById('legend').innerHTML;
           const dateInfo = `<div style="color: #388e3c; font-size: 10px; margin-top: 4px;">Dates included: ${data.processed_dates.join(', ')}</div>`;
-          
           if (!currentLegend.includes('Dates included:')) {
             document.getElementById('legend').innerHTML += dateInfo;
           }
@@ -695,33 +676,30 @@
 
     function showErrorMessage(message) {
       document.getElementById('legend').innerHTML = `Error: ${message}`;
-      console.error(`Error processing data: ${message}`);
+      console.error('Frontend Error:', message);
     }
 
-    // Updated legend function to correctly display dates
     function updateLegend(candleData, volumeData, vwapData) {
       const legend = document.getElementById('legend');
       if (candleData) {
-        // Convert timestamp to date object and ensure NY timezone
         const timestamp = candleData.time * 1000;
         const utcDate = new Date(timestamp);
         
-        // Format the date consistent with server-side processing
         const nyOptions = { timeZone: 'America/New_York' };
         const nyMonth = utcDate.toLocaleString('en-US', {...nyOptions, month: 'numeric'});
         const nyDay = utcDate.toLocaleString('en-US', {...nyOptions, day: 'numeric'});
-        const nyTime = utcDate.toLocaleString('en-US', {...nyOptions, hour: '2-digit', minute: '2-digit', hour12: true});
-        
-        // Format MM/DD
+        let nyTime = '';
+        if (currentRange === '1D') {
+            nyTime = utcDate.toLocaleString('en-US', {...nyOptions, hour: '2-digit', minute: '2-digit', hour12: true});
+        }
         const dateStr = `${nyMonth.padStart(2, '0')}/${nyDay.padStart(2, '0')}`;
-        
         legend.innerHTML = `
           <span style="font-weight:bold">${currentTicker}</span> | 
-          Open: ${candleData.open?.toFixed(2) || 'N/A'} | 
+          Open: ${candleData.open?.toFixed(2) || 'N/A'} |
           High: ${candleData.high?.toFixed(2) || 'N/A'} | 
           Low: ${candleData.low?.toFixed(2) || 'N/A'} | 
           Close: ${candleData.close?.toFixed(2) || 'N/A'} | 
-          Volume: ${volumeData?.value?.toLocaleString() || 'N/A'} | 
+          Volume: ${volumeData?.value?.toLocaleString() || 'N/A'} |
           VWAP: ${vwapData?.value ? vwapData.value.toFixed(2) : 'N/A'} | 
           ${dateStr} ${nyTime}
         `;
@@ -740,7 +718,6 @@
     }
 
     chart.subscribeCrosshairMove(handleCrosshairMove);
-
     document.getElementById('fetch').addEventListener('click', () => {
       const ticker = document.getElementById('ticker').value;
       const fromDate = document.getElementById('from-date').value;
@@ -761,51 +738,169 @@
         document.querySelector('[data-range="1D"]').classList.add('active');
       }
       
+      currentRange = activeRange;
       fetchData(activeRange);
     });
-
     document.getElementById('ticker').addEventListener('change', () => {
       document.querySelectorAll('.range-switcher button').forEach(btn => {
         btn.classList.remove('active');
       });
       document.querySelector('[data-range="1D"]').classList.add('active');
+      currentRange = '1D';
     });
+    
+    async function loadInitialData() {
+        console.log('Frontend Log: loadInitialData started.');
+        let datesData = { dates: [] };
+        try {
+            const datesResponse = await fetch('/available_dates');
+            if (!datesResponse.ok) {
+                const errorText = await datesResponse.text();
+                throw new Error(`Failed to fetch available dates: ${datesResponse.status} - ${errorText}`);
+            }
+            datesData = await datesResponse.json();
+            console.log('Frontend Log: Received datesData:', datesData.dates);
+        } catch (error) {
+            console.error('Frontend Error: Error loading available dates in loadInitialData:', error);
+            document.getElementById('legend').innerHTML = `Error: Could not load available dates. Please check server logs and browser console.`;
+            return; 
+        }
 
-    fetch('/available_dates')
-      .then(response => response.json())
-      .then(data => {
         const fromDateSelect = document.getElementById('from-date');
         const toDateSelect = document.getElementById('to-date');
-        data.dates.forEach(date => {
-          addOption(fromDateSelect, date);
-          addOption(toDateSelect, date);
-        });
-      });
+        
+        fromDateSelect.innerHTML = '<option value="">From</option>';
+        toDateSelect.innerHTML = '<option value="">To</option>';
 
-    document.getElementById('from-date').addEventListener('change', () => {
-      const fromDate = document.getElementById('from-date').value;
-      const toDateSelect = document.getElementById('to-date');
-      toDateSelect.innerHTML = '<option value="">To</option>';
+        if (datesData.dates && datesData.dates.length > 0) {
+            datesData.dates.forEach(date => {
+                addOption(fromDateSelect, date);
+                addOption(toDateSelect, date);
+            });
+            console.log(`Frontend Log: Populated From/To date dropdowns with ${datesData.dates.length} dates.`);
+        } else {
+            console.warn("Frontend Warning: No available dates found from the server.");
+            document.getElementById('legend').innerHTML = `No dates found. Ensure data directory is correct and contains .csv.gz files.`;
+        }
 
-      if (!fromDate) return;
+        const urlParams = new URLSearchParams(window.location.search);
+        const tickerParam = urlParams.get('ticker');
+        const fromParam = urlParams.get('from');
+        const toParam = urlParams.get('to');
+        const rangeParam = urlParams.get('range');
 
-      fetch('/available_dates')
-        .then(response => response.json())
-        .then(data => {
-          data.dates.forEach(date => {
-            if (date >= fromDate) {
-              addOption(toDateSelect, date);
+        if (tickerParam && fromParam) {
+            console.log(`Frontend Log: URL parameters found - Ticker: ${tickerParam}, From: ${fromParam}, To: ${toParam}, Range: ${rangeParam}`);
+            fromDateSelect.value = fromParam;
+            
+            if (datesData.dates.includes(fromParam)) {
+                await updateDependentDropdowns(fromParam); 
+            } else {
+                console.warn(`Frontend Warning: URL fromDate ${fromParam} not found in available dates.`);
+                const initialFromDateForTickers = datesData.dates.length > 0 ? datesData.dates[0] : '';
+                if (initialFromDateForTickers) {
+                    await updateDependentDropdowns(initialFromDateForTickers);
+                }
             }
-          });
-        });
 
-      fetch(`/available_tickers?date=${fromDate}`)
-        .then(response => response.json())
-        .then(data => {
-          const tickerSelect = document.getElementById('ticker');
-          tickerSelect.innerHTML = '<option value="">Select Ticker</option>';
-          data.tickers.forEach(ticker => addOption(tickerSelect, ticker));
-        });
+            document.getElementById('ticker').value = tickerParam;
+            toDateSelect.value = toParam || fromParam;
+            
+            if (rangeParam) {
+                document.querySelectorAll('.range-switcher button').forEach(btn => {
+                    btn.classList.remove('active');
+                    if (btn.getAttribute('data-range') === rangeParam) {
+                        btn.classList.add('active');
+                    }
+                });
+                currentRange = rangeParam;
+            } else {
+                document.querySelector('[data-range="1D"]').classList.add('active');
+                currentRange = '1D';
+            }
+            
+            console.log('Frontend Log: Triggering fetchData from URL parameters.');
+            fetchData(currentRange);
+        } else {
+            console.log('Frontend Log: No URL parameters found. Initializing with defaults.');
+            const initialFromDate = datesData.dates.length > 0 ? datesData.dates[0] : '';
+            if (initialFromDate) {
+                fromDateSelect.value = initialFromDate;
+                await updateDependentDropdowns(initialFromDate);
+            }
+            document.querySelector('[data-range="1D"]').classList.add('active');
+            currentRange = '1D';
+        }
+        console.log('Frontend Log: loadInitialData finished.');
+    }
+    
+    async function updateDependentDropdowns(fromDate) {
+        console.log(`Frontend Log: updateDependentDropdowns started for fromDate: ${fromDate}`);
+        const toDateSelect = document.getElementById('to-date');
+        const tickerSelect = document.getElementById('ticker');
+
+        let datesData = { dates: [] };
+        try {
+            const datesResponse = await fetch('/available_dates');
+            if (!datesResponse.ok) {
+                const errorText = await datesResponse.text();
+                throw new Error(`Failed to fetch available dates for dependent update: ${datesResponse.status} - ${errorText}`);
+            }
+            datesData = await datesResponse.json();
+            console.log('Frontend Log: Received datesData for dependent update:', datesData.dates);
+        } catch (error) {
+            console.error('Frontend Error: Error re-loading available dates in updateDependentDropdowns:', error);
+        }
+
+        toDateSelect.innerHTML = '<option value="">To</option>';
+        if (datesData.dates && datesData.dates.length > 0) {
+            datesData.dates.forEach(date => {
+                if (date >= fromDate) {
+                    addOption(toDateSelect, date);
+                }
+            });
+            console.log(`Frontend Log: Populated To date dropdown from ${fromDate}.`);
+        } else {
+            console.warn("Frontend Warning: No available dates for To date dropdown.");
+        }
+
+        tickerSelect.innerHTML = '<option value="">Select Ticker</option>';
+        if (fromDate) {
+            let tickersData = { tickers: [] };
+            try {
+                const tickersResponse = await fetch(`/available_tickers?date=${fromDate}`);
+                if (!tickersResponse.ok) {
+                    const errorText = await tickersResponse.text();
+                    throw new Error(`Failed to fetch available tickers: ${tickersResponse.status} - ${errorText}`);
+                }
+                tickersData = await tickersResponse.json();
+                console.log('Frontend Log: Received tickersData:', tickersData.tickers);
+            }
+            catch (error) {
+                console.error('Frontend Error: Error loading available tickers in updateDependentDropdowns:', error);
+            }
+            
+            if (tickersData.tickers && tickersData.tickers.length > 0) {
+                tickersData.tickers.forEach(ticker => addOption(tickerSelect, ticker));
+                console.log(`Frontend Log: Populated Ticker dropdown for date ${fromDate}.`);
+            } else {
+                console.warn(`Frontend Warning: No tickers found for date: ${fromDate}.`);
+            }
+        } 
+        console.log('Frontend Log: updateDependentDropdowns finished.');
+    }
+
+    document.getElementById('from-date').addEventListener('change', async (event) => {
+      console.log('Frontend Log: From Date changed to:', event.target.value);
+      await updateDependentDropdowns(event.target.value);
+      document.getElementById('ticker').value = '';
+      document.getElementById('to-date').value = event.target.value;
+      document.querySelectorAll('.range-switcher button').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      document.querySelector('[data-range="1D"]').classList.add('active');
+      currentRange = '1D';
+      console.log('Frontend Log: From Date change handler finished.');
     });
 
     function addOption(select, value) {
@@ -816,9 +911,12 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+      console.log('Frontend Log: DOMContentLoaded. Initializing application.');
       enableRangeSwitcher();
       connectSSE();
+      loadInitialData();
       
+      const themeToggle = document.getElementById('theme-toggle');
       if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
         document.body.style.backgroundColor = '#222';
         document.querySelector('.controls').style.backgroundColor = 'rgba(34, 34, 34, 0.85)';
@@ -832,20 +930,25 @@
           grid: {
             vertLines: { color: 'rgba(200, 200, 200, 0.2)' },
             horzLines: { color: 'rgba(200, 200, 200, 0.2)' },
+          },
+          crosshair: {
+            vertLine: {
+              color: 'rgba(200, 200, 200, 0.3)',
+            },
+            horzLine: {
+              color: 'rgba(200, 200, 200, 0.3)',
+            }
           }
         });
       }
     });
-
     window.addEventListener('resize', () => {
       chart.resize(
         document.getElementById('chart-container').clientWidth,
         document.getElementById('chart-container').clientHeight
       );
     });
-
-    const themeToggle = document.getElementById('theme-toggle');
-    themeToggle.addEventListener('click', () => {
+    const themeToggle = document.addEventListener('click', () => {
       const isDarkMode = document.body.style.backgroundColor === 'rgb(34, 34, 34)';
       if (isDarkMode) {
         document.body.style.backgroundColor = 'white';
