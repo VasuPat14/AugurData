@@ -579,16 +579,25 @@ function handleCompareCrosshairMove(param, overrideMessage = '') {
     let html = '';
     for (const ticker in compareChartInstance.series) {
         const seriesInfo = compareChartInstance.series[ticker];
+        
+        // Skip if both price and volume are hidden in settings
         if (!seriesInfo.visible.price && !seriesInfo.visible.volume) continue;
 
         const fullData = compareChartInstance.allData[ticker]?.timeToDataMap.get(param.time);
-        if (fullData && fullData.candle && fullData.volume) {
-             html += `<div style="color: ${seriesInfo.color};">
-                <strong>${ticker}:</strong>
-                <span>${fullData.candle.close.toFixed(2)}</span>
-                <span style="margin-left: 10px;">V: ${formatVolume(fullData.volume.value)}</span>
-            </div>`;
+        
+        html += `<div style="color: ${seriesInfo.color};"><strong>${ticker}:</strong>`;
+
+        if (seriesInfo.visible.price) {
+            const price = (fullData && fullData.candle) ? fullData.candle.close.toFixed(2) : 'N/A';
+            html += ` <span style="font-variant-numeric: tabular-nums;">${price}</span>`;
         }
+        
+        if (seriesInfo.visible.volume) {
+            const vol = (fullData && fullData.volume) ? formatVolume(fullData.volume.value) : 'N/A';
+            html += `<span style="margin-left: 10px; font-variant-numeric: tabular-nums;">V: ${vol}</span>`;
+        }
+
+        html += `</div>`;
     }
     legendEl.innerHTML = html || '<div>No data at this time</div>';
 }
