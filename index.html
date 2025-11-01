@@ -3,999 +3,1033 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stock Chart</title>
+  <title>AugurData</title>
   <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
   <style>
+    /* --- Base and Theme Setup --- */
+    :root {
+      --bg-light: #ffffff; --bg-secondary-light: #f8f9fa; --bg-workspace-light: #f0f2f5;
+      --text-light: #333; --border-light: #dee2e6;
+      --bg-dark: #1a1a1a; --bg-secondary-dark: #2a2a2a; --bg-workspace-dark: #121212;
+      --text-dark: #ddd; --border-dark: #333;
+      --accent-color: #2196F3; --danger-color: #ef5350;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      background-color: white;
-      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: var(--bg-workspace-light); color: var(--text-light);
+      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
     }
-    .chart-container {
-      width: 100vw;
-      height: 85vh;
-      background-color: white;
-      position: relative;
-    }
+    body.dark { background-color: var(--bg-workspace-dark); color: var(--text-dark); }
+
+    /* --- Header & Global Controls --- */
     .controls {
-      margin: 10px;
-      position: relative;
-      z-index: 10;
-      background-color: rgba(255, 255, 255, 0.85);
-      padding: 8px;
-      border-radius: 4px;
-      display: flex;
-      align-items: center;
-      font-size: 12px;
-      flex-wrap: wrap;
-      gap: 8px;
+      padding: 8px 12px; background-color: var(--bg-light); border-bottom: 1px solid var(--border-light);
+      display: flex; align-items: center; flex-wrap: wrap; gap: 15px; z-index: 100;
     }
-    .controls select, .controls button {
-      padding: 6px;
-      margin-right: 8px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      font-size: 12px;
-      cursor: pointer;
+    body.dark .controls { background-color: #1e1e1e; border-color: var(--border-dark); }
+    .control-group { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .action-group { margin-left: auto; }
+    .controls button, .controls select {
+      padding: 5px 10px; border: 1px solid var(--border-light); border-radius: 4px; font-size: 13px;
+      cursor: pointer; background-color: var(--bg-light); color: var(--text-light);
     }
-    #legend {
-      position: absolute;
-      left: 10px;
-      top: 10px;
-      z-index: 1000;
-      font-size: 12px;
-      font-family: sans-serif;
-      line-height: 1.2;
-      font-weight: 300;
-      background-color: rgba(255, 255, 255, 0.9);
-      padding: 6px 10px;
-      border-radius: 4px;
-      border: 1px solid #ddd;
-      pointer-events: none;
-      white-space: nowrap;
+    body.dark .controls button, body.dark .controls select { background-color: #2a2a2a; border-color: var(--border-dark); color: var(--text-dark); }
+    .controls button#fetch { background-color: var(--accent-color); color: white; border-color: var(--accent-color); }
+    .icon-button { font-size: 20px; cursor: pointer; user-select: none; padding: 4px; background: none; border: none; color: #787b86; }
+    body.dark .icon-button { color: #9db2bd; }
+    #processing-status { font-size: 12px; font-weight: 500; color: var(--accent-color); }
+    .disabled-controls .search-input, .disabled-controls button, .disabled-controls select { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+
+    /* --- Searchable Dropdown --- */
+    .search-container { position: relative; }
+    .search-input {
+      padding: 5px 10px; border: 1px solid var(--border-light); border-radius: 4px; font-size: 13px;
+      background-color: var(--bg-light); color: var(--text-light); width: 120px;
     }
-    #slider {
-      position: absolute;
-      bottom: 0.35in;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 3in;
-      z-index: 10;
+    body.dark .search-input { background-color: #2a2a2a; border-color: var(--border-dark); color: var(--text-dark); }
+    .results-list {
+        position: absolute; top: 100%; left: 0; width: 100%; max-height: 200px;
+        background-color: var(--bg-light); border: 1px solid var(--border-light);
+        border-top: none; border-radius: 0 0 4px 4px; overflow-y: auto; z-index: 101; display: none;
     }
-    .range-switcher {
-      position: absolute;
-      bottom: 0.12in;
-      left: 50%;
-      transform: translateX(-50%);
-      display: flex;
-      gap: 10px;
+    body.dark .results-list { border-color: var(--border-dark); background-color: #2a2a2a; }
+    .result-item { padding: 8px 10px; cursor: pointer; font-size: 13px; }
+    .result-item:hover, .result-item.active { background-color: #f0f0f0; }
+    body.dark .result-item:hover, body.dark .result-item.active { background-color: #333; }
+    
+    #ticker-results .selected-list { padding: 5px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .ticker-pill { display: flex; align-items: center; background-color: #f0f2f5; border-radius: 4px; padding: 3px 4px 3px 8px; font-size: 13px; }
+    body.dark .ticker-pill { background-color: #333; }
+    .remove-ticker { background: none; border: none; font-size: 16px; cursor: pointer; margin-left: 5px; color: #787b86; }
+    #ticker-results hr { border: none; border-top: 1px solid var(--border-light); margin: 5px 0; }
+    body.dark #ticker-results hr { border-top-color: var(--border-dark); }
+
+    /* --- Workspace & Chart Windows --- */
+    #workspace { flex-grow: 1; position: relative; overflow: hidden; }
+    .chart-window, #compare-chart-wrapper {
+        position: absolute; border-radius: 6px; background-color: var(--bg-light);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; flex-direction: column;
+        overflow: hidden;
     }
-    .range-switcher button {
-      padding: 6px 10px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      background-color: #f9f9f9;
-      cursor: pointer;
-      font-size: 12px;
+    .chart-window { width: 700px; height: 500px; min-width: 450px; min-height: 350px; border: 1px solid var(--border-light); touch-action: none; }
+    #compare-chart-wrapper { top: 8px; left: 8px; right: 8px; bottom: 8px; border: 1px solid var(--border-light); }
+    body.dark .chart-window, body.dark #compare-chart-wrapper { border-color: var(--border-dark); background-color: var(--bg-dark); box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+    
+    .window-header {
+        padding: 6px 10px; cursor: move; background-color: var(--bg-secondary-light); border-bottom: 1px solid var(--border-light);
+        font-size: 12px; display: flex; justify-content: space-between; align-items: center; user-select: none;
     }
-    .range-switcher button.active {
-      background-color: #007bff;
-      color: white;
-      border-color: #007bff;
+    #compare-chart-wrapper .window-header { cursor: default; }
+    body.dark .window-header { background-color: #2a2a2a; border-color: var(--border-dark); }
+    .title-legend-container { display: flex; align-items: flex-start; gap: 15px; overflow: hidden; white-space: nowrap; }
+    .window-title { font-weight: 600; font-size: 14px; flex-shrink: 0; padding-top: 2px; }
+    .header-legend { display: flex; flex-direction: column; gap: 2px; color: #787b86; font-variant-numeric: tabular-nums; }
+    .header-legend div { display: flex; gap: 10px; flex-wrap: wrap; }
+    body.dark .header-legend { color: #9db2bd; }
+    .header-icons { display: flex; align-items: center; flex-shrink: 0; gap: 8px; }
+    .settings-button { font-size: 12px; padding: 2px 8px; border: 1px solid #ced4da; border-radius: 4px; cursor: pointer; background-color: transparent; }
+    body.dark .settings-button { border-color: #495057; }
+    .settings-button.active { background-color: var(--accent-color); color: white; border-color: var(--accent-color); }
+    
+    .chart-container { flex-grow: 1; position: relative; min-height: 0; }
+    .chart-footer {
+        flex-shrink: 0; padding: 8px 0; display: flex; flex-direction: column;
+        align-items: center; gap: 8px; border-top: 1px solid var(--border-light); background-color: var(--bg-secondary-light);
     }
-    #theme-toggle {
-      font-size: 16px;
-      cursor: pointer;
-      margin-right: 15px;
+    body.dark .chart-footer { border-top-color: var(--border-dark); background-color: #2a2a2a; }
+    .slider { width: min(400px, 90%); }
+    .range-switcher { display: flex; gap: 8px; }
+    .range-switcher button { padding: 5px 12px; border: 1px solid var(--border-light); border-radius: 4px; background-color: var(--bg-light); color: var(--text-light); cursor: pointer; }
+    body.dark .range-switcher button { background-color: var(--bg-secondary-dark); border-color: var(--border-dark); }
+    .range-switcher button.active { background-color: var(--accent-color); color: white; border-color: var(--accent-color); }
+
+    .settings-panel {
+        position: absolute; right: 0; top: 35px; width: 280px; height: calc(100% - 35px);
+        background-color: var(--bg-light); z-index: 20; border-left: 1px solid var(--border-light);
+        display: none; flex-direction: column; padding: 15px; gap: 15px; font-size: 13px;
+        overflow-y: auto;
     }
-    #processing-status {
-      color: white;
-      background: rgba(0, 0, 0, 0.7);
-      padding: 3px 8px;
-      border-radius: 4px;
-      margin-left: 15px;
-    }
+    body.dark .settings-panel { background-color: #1e1e1e; border-left-color: var(--border-dark); }
+    .settings-section h4 { margin: 0 0 5px 0; font-size: 14px; border-bottom: 1px solid var(--border-light); padding-bottom: 5px; }
+    body.dark .settings-section h4 { border-bottom-color: var(--border-dark); }
+    .settings-section .setting-item, .indicator-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+    .setting-item input[type="number"] { width: 60px; padding: 2px; }
+    .compare-visibility-controls { display: flex; gap: 15px; }
+    .compare-visibility-controls label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
   </style>
 </head>
 <body>
   <div class="controls">
-    <label id="theme-toggle">🌙</label>
-    <select id="from-date">
-      <option value="">From</option>
-    </select>
-    <select id="to-date">
-      <option value="">To</option>
-    </select>
-    <select id="ticker">
-      <option value="">Select Ticker</option>
-    </select>
-    <button id="fetch">Fetch</button>
-    <div id="processing-status" style="display: none;">
-      Processing: <span id="processing-percent">0</span>%
+    <div class="control-group">
+        <select id="feature-select">
+            <option value="" disabled selected>Select Feature</option>
+            <option value="Charts">Charts</option>
+            <option value="SeriesCompare">Series Compare</option>
+        </select>
+    </div>
+    <div class="control-group disabled-controls" id="chart-controls">
+      <div class="search-container">
+          <input type="text" id="from-date-input" class="search-input" autocomplete="off" placeholder="From">
+          <div id="from-date-results" class="results-list"></div>
+      </div>
+      <div class="search-container">
+          <input type="text" id="to-date-input" class="search-input" autocomplete="off" placeholder="To">
+          <div id="to-date-results" class="results-list"></div>
+      </div>
+      <div class="search-container" id="ticker-search-container">
+          <input type="text" id="ticker-input" class="search-input" autocomplete="off" placeholder="Ticker">
+          <div id="ticker-results" class="results-list"></div>
+      </div>
+    </div>
+    <div class="control-group action-group">
+      <button id="fetch">Fetch Data</button>
+      <div id="processing-status" style="display: none;"></div>
+      <button id="theme-toggle" class="icon-button">🌙</button>
     </div>
   </div>
+  <div id="workspace"></div>
 
-  <div id="chart-container" class="chart-container">
-    <div id="legend">Hover over the chart to see data</div>
-  </div>
+<script>
+// --- Global State & Constants ---
+const indicatorDefaults = {
+    'VWAP': { color: '#6a1b9a' }, '5ema': { color: '#d32f2f' }, '9ema': { color: '#f57c00' }, 
+    '20ema': { color: '#00796b' }, '50ema': { color: '#303f9f' }, '200ema': { color: '#c2185b' }
+};
+const compareColors = ['#2962FF', '#E64A19', '#00796B', '#C2185B', '#F57C00', '#5D4037', '#6A1B9A', '#303F9F', '#AD1457', '#004D40'];
+const MAX_TICKERS = 10;
+let chartInstances = {}, compareChartInstance = null;
+let selectedTickers = [];
+let availableDates = [], availableTickers = [];
+let isDarkMode = false;
+let dataCache = new Map();
+let windowZIndex = 10;
+let eventSource = null, clientId = null, activeFeature = '';
 
-  <input type="range" id="slider" min="0" max="100" value="100">
-  <div class="range-switcher">
-    <button data-range="1D" class="active">Minutes</button>
-    <button data-range="D">Daily</button>
-    <button data-range="1W">W</button>
-    <button data-range="1M">M</button>
-    <button data-range="1Y">Y</button>
-  </div>
+// --- Utility Functions ---
+function formatVolume(volume) {
+    if (volume >= 1000000) {
+        return (volume / 1000000).toFixed(2) + 'M';
+    } else if (volume >= 1000) {
+        return (volume / 1000).toFixed(1) + 'K';
+    }
+    return volume.toString();
+}
 
-  <script>
-    const intervalColors = {
-      '1D': '#2962FF',
-      'D': '#36B37E',
-      '1W': 'rgb(225, 87, 90)',
-      '1M': 'rgb(242, 142, 44)',
-      '1Y': 'rgb(164, 89, 209)'
-    };
-
-    const chartOptions = {
-      layout: {
-        background: { type: 'solid', color: 'white' },
-        textColor: 'black',
-        panes: {
-          separatorColor: 'red',
-          separatorHoverColor: '#d1d1d1',
-          separatorThickness: 2,
-          enableResize: true,
-        },
-      },
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: true,
-        fixLeftEdge: true,
-        lockVisibleTimeRangeOnResize: true,
-        rightOffset: 5,
-        leftOffset: 15,
-        tickMarkFormatter: (time) => {
-          return formatTimeLabel(time, currentRange);
-        },
-      },
-      rightPriceScale: {
-        scaleMargins: {
-          top: 0.1,
-          bottom: 0.2,
-        },
-      },
-      grid: {
-        vertLines: { color: 'rgba(100, 100, 100, 0.3)', visible: true },
-        horzLines: { color: 'rgba(100, 100, 100, 0.3)', visible: true },
-      },
-      localization: {
-        timeFormatter: (time) => {
-          return formatTimeLabel(time, currentRange);
+// --- SSE Connection ---
+function connectSSE() {
+    if (eventSource) eventSource.close();
+    eventSource = new EventSource('/sse-connect');
+    eventSource.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        const activeTicker = Object.keys(chartInstances).find(t => chartInstances[t].isLoading);
+        if (!activeTicker && activeFeature !== 'SeriesCompare') return;
+        
+        if (activeFeature === 'SeriesCompare') {
+            // Can be extended to show progress for compare mode
+        } else if (activeTicker) {
+            switch (msg.type) {
+                case 'connected': clientId = msg.client_id; break;
+                case 'progress': updateProgressIndicator(`Processing: ${Math.round(msg.data.percentage)}%`); break;
+                case 'partial_data': updateChartData(activeTicker, chartInstances[activeTicker].currentRange, msg.data, true); break;
+                case 'complete':
+                    hideProgressIndicator();
+                    chartInstances[activeTicker].isLoading = false;
+                    updateChartData(activeTicker, chartInstances[activeTicker].currentRange, msg.data);
+                    break;
+                case 'error':
+                    hideProgressIndicator();
+                    chartInstances[activeTicker].isLoading = false;
+                    handleCrosshairMove(null, activeTicker, `Error: ${msg.data.message}`);
+                    break;
+            }
         }
-      },
-      crosshair: {
-        mode: LightweightCharts.CrosshairMode.Normal,
-        vertLine: {
-          width: 1,
-          color: 'rgba(150, 150, 150, 0.5)',
-          labelVisible: true,
-        },
-        horzLine: {
-          width: 1,
-          color: 'rgba(150, 150, 150, 0.5)',
-          labelVisible: true,
-        },
-      }
     };
-    const chart = LightweightCharts.createChart(document.getElementById('chart-container'), chartOptions);
+    eventSource.onerror = () => { setTimeout(connectSSE, 3000); };
+}
 
-    const candlestickSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { priceScaleId: 'right' }, 0);
-    const volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
-      priceFormat: { type: 'volume' },
-      color: '#26a69a',
-      priceScaleId: 'volume',
+// --- Main Fetch Controller ---
+function handleFetchButtonClick() {
+    const fromDate = document.getElementById('from-date-input').value;
+    const toDate = document.getElementById('to-date-input').value;
+    if (activeFeature && selectedTickers.length > 0 && fromDate) {
+        const newUrl = new URL(window.location.pathname, window.location.origin);
+        newUrl.searchParams.set('feature', activeFeature); // CORRECTED: Add feature to URL
+        newUrl.searchParams.set('ticker', selectedTickers.join(','));
+        newUrl.searchParams.set('from', fromDate);
+        if (toDate && toDate !== fromDate) {
+            newUrl.searchParams.set('to', toDate);
+        }
+        window.history.pushState({ path: newUrl.href }, '', newUrl.href);
+    }
+
+    if (selectedTickers.length === 0) return alert('Please add at least one ticker.');
+    if(activeFeature === 'Charts') {
+        const useSSE = selectedTickers.length === 1;
+        if (useSSE) showProgressIndicator('Connecting...'); else showProgressIndicator(`Fetching ${selectedTickers.length} tickers...`);
+        const fetchPromises = selectedTickers.map(ticker => {
+            if (!chartInstances[ticker]) createChartWindow(ticker);
+            return fetchDataForTicker(ticker, chartInstances[ticker].currentRange, useSSE);
+        });
+        Promise.all(fetchPromises).then(() => { if (!useSSE) hideProgressIndicator(); });
+    } else if (activeFeature === 'SeriesCompare') {
+        if (!compareChartInstance) {
+            initializeCompareChart();
+        }
+        fetchAndRenderCompareData();
+    }
+}
+
+// --- "Charts" Feature: Window & Chart Initialization ---
+function createChartWindow(ticker) {
+    if (chartInstances[ticker]) { chartInstances[ticker].window.style.zIndex = ++windowZIndex; return; }
+    const windowEl = document.createElement('div');
+    windowEl.className = 'chart-window';
+    windowEl.dataset.ticker = ticker;
+    const initialX = 20 + (Object.keys(chartInstances).length % 5) * 40;
+    const initialY = 20 + (Object.keys(chartInstances).length % 5) * 40;
+    windowEl.style.transform = `translate(${initialX}px, ${initialY}px)`;
+    windowEl.setAttribute('data-x', initialX);
+    windowEl.setAttribute('data-y', initialY);
+    windowEl.style.zIndex = ++windowZIndex;
+
+    windowEl.innerHTML = `
+        <div class="window-header">
+            <div class="title-legend-container">
+                <span class="window-title">${ticker}</span>
+                <div class="header-legend"><div>Awaiting data...</div></div>
+            </div>
+            <div class="header-icons">
+                <button class="settings-button settings-toggle" title="Settings">Settings</button>
+                <button class="icon-button window-close" title="Close">&times;</button>
+            </div>
+        </div>
+        <div class="chart-container"></div>
+        <div class="chart-footer">
+            <input type="range" class="slider" min="0" max="0" value="0">
+            <div class="range-switcher">
+                <button data-range="1D" class="active">Minutes</button><button data-range="D">Daily</button><button data-range="1W">Week</button>
+                <button data-range="1M">Month</button><button data-range="1Y">Year</button>
+            </div>
+        </div>
+        <div class="settings-panel"></div>`;
+    document.getElementById('workspace').appendChild(windowEl);
+    const chartContainer = windowEl.querySelector('.chart-container');
+    const chart = initializeChart(chartContainer, ticker);
+    const instance = {
+        window: windowEl, chart: chart, allData: {}, timeToDataMap: new Map(), currentRange: '1D',
+        mainSeries: null, volumeSeries: null, activeIndicators: {}, isLoading: false,
+        mainSeriesType: 'Candlestick',
+    };
+    chartInstances[ticker] = instance;
+    instance.mainSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
+    
+    instance.volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, { 
+        priceFormat: { 
+            type: 'custom',
+            formatter: formatVolume,
+        } 
     }, 1);
-
-    volumeSeries.priceScale().applyOptions({
-      scaleMargins: {
-        top: 0.1,
-        bottom: 0.01,
-      },
+    
+    instance.volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.2, bottom: 0 } });
+    
+    windowEl.querySelector('.range-switcher').addEventListener('click', (e) => {
+        if (e.target.tagName === 'BUTTON') {
+            windowEl.querySelectorAll('.range-switcher button').forEach(btn => btn.classList.remove('active'));
+            e.target.classList.add('active');
+            const range = e.target.dataset.range;
+            instance.currentRange = range;
+            chart.timeScale().applyOptions({ tickMarkFormatter: (time) => formatTimeLabel(time, range) });
+            fetchDataForTicker(ticker, range, true);
+        }
     });
-    let allData = [];
-    let volumeData = [];
-    let vwapData = [];
-    let currentTicker = '';
-    let currentStartDate = '';
-    let currentEndDate = '';
-    let currentRange = '1D';
-    let dataCache = new Map();
-    const timeToDataMap = new Map();
-    let eventSource = null;
-    let clientId = null;
-    let sseConnected = false;
-    function formatTimeLabel(time, range) {
-      const date = new Date(time * 1000);
-      switch(range) {
-        case '1D':
-          return date.toLocaleString('en-US', {
-            timeZone: 'America/New_York',
-            hour: '2-digit',
-            minute: '2-digit'
-          });
-        case 'D':
-          return date.toLocaleString('en-US', {
-            timeZone: 'America/New_York',
-            month: 'short',
-            day: 'numeric'
-          });
-        case '1W':
-          return date.toLocaleString('en-US', {
-            timeZone: 'America/New_York',
-            month: 'short',
-            day: 'numeric',
-            year: '2-digit'
-          });
-        case '1M':
-          return date.toLocaleString('en-US', {
-            timeZone: 'America/New_York',
-            month: 'short',
-            year: '2-digit'
-          });
-        case '1Y':
-          return date.getFullYear().toString();
-        default:
-          return date.toLocaleString('en-US', {
-            timeZone: 'America/New_York',
-            hour: '2-digit',
-            minute: '2-digit'
-          });
-      }
-    }
+    windowEl.querySelector('.slider').addEventListener('input', (e) => handleSliderInput(e, ticker));
+    windowEl.querySelector('.window-close').addEventListener('click', () => closeChartWindow(ticker));
+    windowEl.querySelector('.settings-toggle').addEventListener('click', (e) => toggleSettingsPanel(ticker, e.currentTarget));
+}
 
-    function connectSSE() {
-      if (eventSource) {
-        eventSource.close();
-      }
-      
-      eventSource = new EventSource('/sse-connect');
-      eventSource.onmessage = function(event) {
-        const data = JSON.parse(event.data);
-        if (data.type === 'connected') {
-          clientId = data.client_id;
-          sseConnected = true;
-          console.log('Frontend Log: SSE Connected. Client ID:', clientId);
-        } else if (data.type === 'progress') {
-          updateProgressIndicator(data.data.percentage);
-          console.log(`Frontend Log: Processing Progress: ${Math.round(data.data.percentage)}%`);
-        } else if (data.type === 'partial_data') {
-          console.log('Frontend Log: Received partial data.');
-          updateChartsWithPartialData(data.data);
-        } else if (data.type === 'complete') {
-          console.log('Frontend Log: Received complete data.');
-          hideProgressIndicator();
-          updateChartsWithFinalData(data.data);
-        } else if (data.type === 'error') {
-          console.error('Frontend Error: Server Error:', data.data.message);
-          showErrorMessage(data.data.message);
-          hideProgressIndicator();
-        } else if (data.type === 'processing_summary') {
-          const summary = data.data;
-          console.log(`Frontend Log: Processing Summary - Successful: ${summary.successful_files.length}, Failed: ${summary.failed_files.length}`);
-          if (summary.failed_files.length > 0) {
-            const dateString = summary.failed_files.join(', ');
-            const currentLegend = document.getElementById('legend').innerHTML;
-            document.getElementById('legend').innerHTML = 
-              `<div style="color: #d32f2f; margin-bottom: 4px;">Failed to process dates: ${dateString}</div>` + 
-              currentLegend;
-          }
-        }
-      };
-      eventSource.onerror = function() {
-        console.error('Frontend Error: SSE connection failed or disconnected.');
-        sseConnected = false;
-        setTimeout(connectSSE, 3000);
-      };
-    }
-
-    async function fetchData(range) {
-      console.log(`Frontend Log: Initiating fetch for range: ${range}`);
-      const ticker = document.getElementById('ticker').value;
-      const fromDate = document.getElementById('from-date').value;
-      let toDate = document.getElementById('to-date').value;
-      
-      if (!ticker || !fromDate) {
-        alert('Please select a ticker and start date.');
-        return;
-      }
-      
-      if (toDate === "" || !toDate) {
-        toDate = fromDate;
-        document.getElementById('to-date').value = fromDate;
-      }
-      
-      currentTicker = ticker;
-      currentStartDate = fromDate;
-      currentEndDate = toDate;
-      currentRange = range;
-      
-      const cacheKey = `${ticker}-${fromDate}-${toDate}-${range}`;
-      if (dataCache.has(cacheKey)) {
-        console.log(`Frontend Log: Serving data from client-side cache for key: ${cacheKey}.`);
-        const cachedData = dataCache.get(cacheKey);
-        allData = JSON.parse(JSON.stringify(cachedData.candlestick));
-        volumeData = JSON.parse(JSON.stringify(cachedData.volume));
-        vwapData = JSON.parse(JSON.stringify(cachedData.vwap));
-        
-        timeToDataMap.clear();
-        updateChartData(range);
-        return;
-      }
-
-      try {
-        resetChartData();
-        document.getElementById('legend').innerHTML = 'Loading data...';
-        showProgressIndicator();
-        
-        if (!clientId) {
-          console.log('Frontend Log: Waiting for SSE connection before fetching data.');
-          let retries = 0;
-          const maxRetries = 5;
-          while (!sseConnected && retries < maxRetries) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            retries++;
-          }
-          
-          if (!sseConnected) {
-            console.warn('Frontend Warning: SSE not connected after retries. Attempting reconnect.');
-            connectSSE();
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            if (!clientId) {
-              throw new Error('Could not establish SSE connection. Please try again.');
-            }
-          }
-        }
-        
-        console.log(`Frontend Log: Sending request to server for data: ticker=${ticker}, dates=${fromDate} to ${toDate}, range=${range}, client_id=${clientId}`);
-        const response = await fetch(`/one_minute_data_range?ticker=${ticker}&start_date=${fromDate}&end_date=${toDate}&range=${range}&client_id=${clientId}`);
-        if (!response.ok) {
-          throw new Error(`HTTP error! Status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        console.log(`Frontend Log: Initial response from /one_minute_data_range received.`);
-
-        if (data.error) {
-          showErrorMessage(data.error);
-          hideProgressIndicator();
-          return;
-        }
-
-        if (data.status === "processing_started") {
-          document.getElementById('legend').innerHTML = 'Processing data...';
-          console.log(`Frontend Log: Server reported processing started for ${data.files_count} files. Waiting for SSE updates.`);
-          return;
-        }
-
-        console.log('Frontend Log: Direct data received (not processing_started). Updating chart.');
-        allData = data.candlestick;
-        volumeData = data.volume;
-        vwapData = data.vwap;
-        
-        dataCache.set(cacheKey, {
-          candlestick: JSON.parse(JSON.stringify(allData)),
-          volume: JSON.parse(JSON.stringify(volumeData)),
-          vwap: JSON.parse(JSON.stringify(vwapData))
-        });
-        updateChartData(range);
-        hideProgressIndicator();
-        console.log(`Frontend Log: Chart data loaded and displayed directly.`);
-      } catch (error) {
-        console.error('Frontend Error: Failed to fetch or process data:', error);
-        document.getElementById('legend').innerHTML = `Failed to load data: ${error.message}`;
-        hideProgressIndicator();
-      }
-    }
-    
-    function updateChartData(range) {
-      console.log('Frontend Log: Updating chart series data.');
-      mapTimeToData();
-      const coloredVolumeData = volumeData.map((vol, index) => {
-        if (index < allData.length) {
-          return {
-            ...vol,
-            color: allData[index].close >= allData[index].open ? '#26a69a' : '#ef5350'
-          };
-        }
-        return vol;
-      });
-      candlestickSeries.setData(allData);
-      volumeSeries.setData(coloredVolumeData);
-      
-      if (vwapData && vwapData.length > 0 && vwapData.some(point => point.value !== null)) {
-        if (!window.vwapSeries) {
-          window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
-            color: '#2962FF',
-            lineWidth: 2,
-            priceScaleId: 'right',
-          }, 0);
-        }
-        const filteredVwapData = vwapData.filter(point => point.value !== null);
-        window.vwapSeries.setData(filteredVwapData);
-      } else {
-        if (window.vwapSeries) {
-          chart.removeSeries(window.vwapSeries);
-          window.vwapSeries = null;
-        }
-      }
-      
-      if (allData.length > 0) {
-        const firstDataPoint = timeToDataMap.get(allData[0].time);
-        if (firstDataPoint) {
-          updateLegend(
-            firstDataPoint.candle,
-            firstDataPoint.volume,
-            firstDataPoint.vwap
-          );
-        }
-      } else {
-          document.getElementById('legend').innerHTML = 'No data available for this selection.';
-      }
-
-      chart.timeScale().fitContent();
-      updateSlider();
-      updateTimeScaleFormat(range);
-      document.querySelectorAll('.range-switcher button').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.getAttribute('data-range') === range) {
-          btn.classList.add('active');
-        }
-      });
-      console.log(`Frontend Log: Chart updated with ${allData.length} data points.`);
-    }
-    
-    function resetChartData() {
-      candlestickSeries.setData([]);
-      volumeSeries.setData([]);
-      
-      if (window.vwapSeries) {
-        try {
-          chart.removeSeries(window.vwapSeries);
-          window.vwapSeries = null;
-        } catch (e) {
-          console.error('Frontend Error: Error removing VWAP series:', e);
-        }
-      }
-      
-      allData = [];
-      volumeData = [];
-      vwapData = [];
-      timeToDataMap.clear();
-      
-      document.getElementById('legend').innerHTML = 'Loading...';
-      console.log('Frontend Log: Chart data reset.');
-    }
-    
-    function mapTimeToData() {
-      timeToDataMap.clear();
-      allData.forEach((candle, index) => {
-        timeToDataMap.set(candle.time, {
-          candle: candle,
-          volume: volumeData[index] || { value: null },
-          vwap: vwapData[index] || { value: null }
-        });
-      });
-    }
-    
-    function updateTimeScaleFormat(range) {
-      chart.applyOptions({
-        timeScale: {
-          tickMarkFormatter: (time) => {
-            return formatTimeLabel(time, range);
-          }
+function initializeChart(container, ticker) {
+    const chartOptions = {
+        layout: { background: { color: isDarkMode ? '#1a1a1a' : '#ffffff' }, textColor: isDarkMode ? '#ddd' : '#333', },
+        grid: {
+          vertLines: { color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)' },
+          horzLines: { color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)' }
         },
+        timeScale: {
+          timeVisible: true, secondsVisible: false, borderColor: isDarkMode ? '#333' : '#D1D4DC',
+          tickMarkFormatter: (time) => formatTimeLabel(time, ticker === 'compare' ? compareChartInstance?.currentRange : chartInstances[ticker]?.currentRange || '1D'),
+        },
+        rightPriceScale: { scaleMargins: { top: 0.1, bottom: 0 } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
         localization: {
-          timeFormatter: (time) => {
-            return formatTimeLabel(time, range);
-          }
+            timeFormatter: timestamp => {
+                const date = new Date(timestamp * 1000);
+                return date.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+            },
+        },
+    };
+    const chart = LightweightCharts.createChart(container, chartOptions);
+    const crosshairFn = ticker === 'compare' ? handleCompareCrosshairMove : handleCrosshairMove;
+    chart.subscribeCrosshairMove(param => crosshairFn(param, ticker));
+    return chart;
+}
+
+function closeChartWindow(ticker) {
+    if (chartInstances[ticker]) {
+        chartInstances[ticker].window.remove();
+        delete chartInstances[ticker];
+    }
+    removeTicker(ticker);
+}
+
+// --- "Charts" Feature: Settings & Indicators ---
+function toggleSettingsPanel(ticker, button) {
+    const panel = chartInstances[ticker].window.querySelector('.settings-panel');
+    const isOpen = panel.style.display === 'flex';
+    panel.style.display = isOpen ? 'none' : 'flex';
+    button.classList.toggle('active', !isOpen);
+    if (!isOpen) populateSettingsPanel(ticker);
+}
+
+function populateSettingsPanel(ticker) {
+    const instance = chartInstances[ticker];
+    const panel = instance.window.querySelector('.settings-panel');
+    panel.innerHTML = `
+        <div class="settings-section">
+            <h4>Chart Type</h4>
+            <div class="setting-item">
+                <span>Price</span>
+                <select id="chart-type-select-${ticker}">
+                    <option value="Candlestick" ${instance.mainSeriesType === 'Candlestick' ? 'selected' : ''}>Candlestick</option>
+                    <option value="Line" ${instance.mainSeriesType === 'Line' ? 'selected' : ''}>Line</option>
+                </select>
+            </div>
+        </div>
+        <div class="settings-section">
+            <h4>Indicators</h4>
+            <div class="indicator-list"></div>
+        </div>
+    `;
+    renderIndicatorList(ticker);
+
+    panel.querySelector(`#chart-type-select-${ticker}`).addEventListener('change', (e) => {
+        const newType = e.target.value;
+        if (newType === instance.mainSeriesType) return;
+
+        instance.mainSeriesType = newType;
+        instance.chart.removeSeries(instance.mainSeries);
+
+        let newSeries;
+        let seriesData;
+
+        if (newType === 'Candlestick') {
+            newSeries = instance.chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
+            seriesData = instance.allData.candlestick || [];
+        } else { // Line
+            newSeries = instance.chart.addSeries(LightweightCharts.LineSeries, { color: '#2196F3', lineWidth: 2 });
+            seriesData = (instance.allData.candlestick || []).map(d => ({ time: d.time, value: d.close }));
         }
-      });
-    }
-    
-    function updateSlider() {
-      const slider = document.getElementById('slider');
-      slider.max = allData.length > 0 ? allData.length - 1 : 0;
-      slider.value = slider.max;
-      
-      const newSlider = slider.cloneNode(true);
-      slider.parentNode.replaceChild(newSlider, slider);
-      newSlider.addEventListener('input', () => {
-        const index = parseInt(newSlider.value);
-        if (index >= 0 && index < allData.length) {
-          const visibleCandles = allData.slice(0, index + 1);
-          const visibleVolumes = volumeData.slice(0, index + 1);
-          const visibleVwap = vwapData.slice(0, index + 1);
-          
-          const coloredVolumeData = visibleVolumes.map((vol, i) => {
-            if (i < visibleCandles.length) {
-              return {
-                ...vol,
-                color: visibleCandles[i].close >= visibleCandles[i].open ? '#26a69a' : '#ef5350'
-              };
-            }
-            return vol;
-          });
-          
-          candlestickSeries.setData(visibleCandles);
-          volumeSeries.setData(coloredVolumeData);
-          
-          if (window.vwapSeries && vwapData && vwapData.length > 0) {
-            const filteredVwap = visibleVwap.filter(point => point.value !== null);
-            window.vwapSeries.setData(filteredVwap);
-          }
-          
-          if (visibleCandles.length > 0) {
-            const visibleRange = {
-              from: visibleCandles[0].time,
-              to: visibleCandles[visibleCandles.length - 1].time,
-            };
-            chart.timeScale().setVisibleRange(visibleRange);
-          }
-          
-          const dataPoint = timeToDataMap.get(allData[index].time);
-          if (dataPoint) {
-            updateLegend(dataPoint.candle, dataPoint.volume, dataPoint.vwap);
-          }
-        }
-      });
-    }
-
-    function enableRangeSwitcher() {
-      const rangeButtons = document.querySelectorAll('.range-switcher button');
-      rangeButtons.forEach(button => {
-        const newButton = button.cloneNode(true);
-        button.parentNode.replaceChild(newButton, button);
-      });
-      document.querySelectorAll('.range-switcher button').forEach(button => {
-        button.addEventListener('click', () => {
-          const ticker = document.getElementById('ticker').value;
-          const fromDate = document.getElementById('from-date').value;
-          
-          if (!ticker || !fromDate) {
-            alert('Please select a ticker and start date.');
-            return;
-          }
-          
-          document.querySelectorAll('.range-switcher button').forEach(btn => {
-            btn.classList.remove('active');
-          });
-          
-          button.classList.add('active');
-          
-          const range = button.getAttribute('data-range');
-          currentRange = range;
-          fetchData(range);
-        });
-      });
-    }
-
-    function showProgressIndicator() {
-      const status = document.getElementById('processing-status');
-      status.style.display = 'inline-block';
-      document.getElementById('processing-percent').textContent = '0';
-    }
-
-    function updateProgressIndicator(percentage) {
-      const percentEl = document.getElementById('processing-percent');
-      if (percentEl) {
-        percentEl.textContent = Math.round(percentage);
-      }
-    }
-
-    function hideProgressIndicator() {
-      const status = document.getElementById('processing-status');
-      status.style.display = 'none';
-    }
-
-    function updateChartsWithPartialData(data) {
-      console.log('Frontend Log: Updating chart with partial data.');
-      if (data.candlestick && data.candlestick.length > 0) {
-        allData = data.candlestick;
-        candlestickSeries.setData(data.candlestick);
-      }
-      
-      if (data.volume && data.volume.length > 0) {
-        volumeData = data.volume;
-        const coloredVolumeData = data.volume.map((vol, index) => {
-          if (index < data.candlestick.length) {
-            return {
-              ...vol,
-              color: allData[index].close >= allData[index].open ? '#26a69a' : '#ef5350'
-            };
-          }
-          return vol;
-        });
         
-        volumeSeries.setData(coloredVolumeData);
-      }
-      
-      if (data.vwap && data.vwap.length > 0) {
-        vwapData = data.vwap;
-        if (!window.vwapSeries) {
-          window.vwapSeries = chart.addSeries(LightweightCharts.LineSeries, {
-            color: '#2962FF',
-            lineWidth: 2,
-            priceScaleId: 'right',
-          }, 0);
-        }
-        const filteredVwapData = data.vwap.filter(point => point.value !== null);
-        window.vwapSeries.setData(filteredVwapData);
-      }
-      
-      mapTimeToData();
-      chart.timeScale().fitContent();
-      
-      const slider = document.getElementById('slider');
-      if (slider && allData.length > 0) {
-        slider.max = allData.length - 1;
-        slider.value = slider.max;
-      }
-    }
-
-    function updateChartsWithFinalData(data) {
-      console.log('Frontend Log: Final data received from server. Updating chart.');
-      allData = data.candlestick;
-      volumeData = data.volume;
-      vwapData = data.vwap;
-      
-      updateChartData(currentRange);
-      
-      const cacheKey = `${currentTicker}-${currentStartDate}-${currentEndDate}-${currentRange}`;
-      dataCache.set(cacheKey, {
-        candlestick: JSON.parse(JSON.stringify(allData)),
-        volume: JSON.parse(JSON.stringify(volumeData)),
-        vwap: JSON.parse(JSON.stringify(vwapData)),
-        processed_dates: data.processed_dates || []
-      });
-      console.log(`Frontend Log: Data cached client-side for key: ${cacheKey}.`);
-      
-      if (data.processed_dates && data.processed_dates.length > 0) {
-        if (currentStartDate !== currentEndDate) {
-          const currentLegend = document.getElementById('legend').innerHTML;
-          const dateInfo = `<div style="color: #388e3c; font-size: 10px; margin-top: 4px;">Dates included: ${data.processed_dates.join(', ')}</div>`;
-          if (!currentLegend.includes('Dates included:')) {
-            document.getElementById('legend').innerHTML += dateInfo;
-          }
-        }
-      }
-    }
-
-    function showErrorMessage(message) {
-      document.getElementById('legend').innerHTML = `Error: ${message}`;
-      console.error('Frontend Error:', message);
-    }
-
-    function updateLegend(candleData, volumeData, vwapData) {
-      const legend = document.getElementById('legend');
-      if (candleData) {
-        const timestamp = candleData.time * 1000;
-        const utcDate = new Date(timestamp);
-        
-        const nyOptions = { timeZone: 'America/New_York' };
-        const nyMonth = utcDate.toLocaleString('en-US', {...nyOptions, month: 'numeric'});
-        const nyDay = utcDate.toLocaleString('en-US', {...nyOptions, day: 'numeric'});
-        let nyTime = '';
-        if (currentRange === '1D') {
-            nyTime = utcDate.toLocaleString('en-US', {...nyOptions, hour: '2-digit', minute: '2-digit', hour12: true});
-        }
-        const dateStr = `${nyMonth.padStart(2, '0')}/${nyDay.padStart(2, '0')}`;
-        legend.innerHTML = `
-          <span style="font-weight:bold">${currentTicker}</span> | 
-          Open: ${candleData.open?.toFixed(2) || 'N/A'} |
-          High: ${candleData.high?.toFixed(2) || 'N/A'} | 
-          Low: ${candleData.low?.toFixed(2) || 'N/A'} | 
-          Close: ${candleData.close?.toFixed(2) || 'N/A'} | 
-          Volume: ${volumeData?.value?.toLocaleString() || 'N/A'} |
-          VWAP: ${vwapData?.value ? vwapData.value.toFixed(2) : 'N/A'} | 
-          ${dateStr} ${nyTime}
-        `;
-      } else {
-        legend.innerHTML = 'No data at this point.';
-      }
-    }
-
-    function handleCrosshairMove(param) {
-      if (param.time) {
-        const data = timeToDataMap.get(param.time);
-        if (data) {
-          updateLegend(data.candle, data.volume, data.vwap);
-        }
-      }
-    }
-
-    chart.subscribeCrosshairMove(handleCrosshairMove);
-    document.getElementById('fetch').addEventListener('click', () => {
-      const ticker = document.getElementById('ticker').value;
-      const fromDate = document.getElementById('from-date').value;
-      
-      if (!ticker || !fromDate) {
-        alert('Please select a ticker and start date.');
-        return;
-      }
-      
-      let activeRange = '1D';
-      const activeButton = document.querySelector('.range-switcher button.active');
-      if (activeButton) {
-        activeRange = activeButton.getAttribute('data-range');
-      } else {
-        document.querySelectorAll('.range-switcher button').forEach(btn => {
-          btn.classList.remove('active');
-        });
-        document.querySelector('[data-range="1D"]').classList.add('active');
-      }
-      
-      currentRange = activeRange;
-      fetchData(activeRange);
+        instance.mainSeries = newSeries;
+        instance.mainSeries.setData(seriesData);
     });
-    document.getElementById('ticker').addEventListener('change', () => {
-      document.querySelectorAll('.range-switcher button').forEach(btn => {
-        btn.classList.remove('active');
-      });
-      document.querySelector('[data-range="1D"]').classList.add('active');
-      currentRange = '1D';
-    });
+}
+
+function renderIndicatorList(ticker) {
+    const instance = chartInstances[ticker];
+    const listEl = instance.window.querySelector('.indicator-list');
+    listEl.innerHTML = Object.keys(instance.activeIndicators).map(name => `
+        <div class="indicator-item">
+            <span>${name}</span>
+            <input type="checkbox" data-name="${name}" ${instance.activeIndicators[name].visible ? 'checked' : ''}>
+        </div>
+    `).join('');
+    listEl.querySelectorAll('input[type="checkbox"]').forEach(box => box.addEventListener('change', (e) => {
+        const name = e.target.dataset.name;
+        const isVisible = e.target.checked;
+        instance.activeIndicators[name].visible = isVisible;
+        instance.activeIndicators[name].series.applyOptions({ visible: isVisible });
+    }));
+}
+
+// --- "Series Compare" Feature ---
+function initializeCompareChart() {
+    if (compareChartInstance) return;
+    const wrapper = document.createElement('div');
+    wrapper.id = 'compare-chart-wrapper';
+    wrapper.innerHTML = `
+        <div class="window-header">
+            <div class="title-legend-container">
+                <span class="window-title"></span>
+                <div class="header-legend"><div>Awaiting data...</div></div>
+            </div>
+            <div class="header-icons">
+                <button class="settings-button settings-toggle" title="Settings">Settings</button>
+            </div>
+        </div>
+        <div class="chart-container"></div>
+        <div class="chart-footer">
+            <input type="range" class="slider" min="0" max="0" value="0">
+            <div class="range-switcher">
+                <button data-range="1D" class="active">Minutes</button><button data-range="D">Daily</button><button data-range="1W">Week</button>
+                <button data-range="1M">Month</button><button data-range="1Y">Year</button>
+            </div>
+        </div>
+        <div class="settings-panel"></div>`;
+    document.getElementById('workspace').appendChild(wrapper);
+
+    const chartContainer = wrapper.querySelector('.chart-container');
+    const chart = initializeChart(chartContainer, 'compare');
     
-    async function loadInitialData() {
-        console.log('Frontend Log: loadInitialData started.');
-        let datesData = { dates: [] };
-        try {
-            const datesResponse = await fetch('/available_dates');
-            if (!datesResponse.ok) {
-                const errorText = await datesResponse.text();
-                throw new Error(`Failed to fetch available dates: ${datesResponse.status} - ${errorText}`);
-            }
-            datesData = await datesResponse.json();
-            console.log('Frontend Log: Received datesData:', datesData.dates);
-        } catch (error) {
-            console.error('Frontend Error: Error loading available dates in loadInitialData:', error);
-            document.getElementById('legend').innerHTML = `Error: Could not load available dates. Please check server logs and browser console.`;
-            return; 
-        }
+    chart.subscribeCrosshairMove(param => handleCompareCrosshairMove(param));
+    chart.timeScale().fitContent();
 
-        const fromDateSelect = document.getElementById('from-date');
-        const toDateSelect = document.getElementById('to-date');
-        
-        fromDateSelect.innerHTML = '<option value="">From</option>';
-        toDateSelect.innerHTML = '<option value="">To</option>';
+    compareChartInstance = {
+        wrapper: wrapper, chart: chart, series: {}, currentRange: '1D', allData: {},
+    };
 
-        if (datesData.dates && datesData.dates.length > 0) {
-            datesData.dates.forEach(date => {
-                addOption(fromDateSelect, date);
-                addOption(toDateSelect, date);
+    wrapper.querySelector('.settings-toggle').addEventListener('click', (e) => toggleCompareSettings(e.currentTarget));
+    wrapper.querySelector('.range-switcher').addEventListener('click', (e) => {
+        if (e.target.tagName === 'BUTTON') {
+            wrapper.querySelectorAll('.range-switcher button').forEach(btn => btn.classList.remove('active'));
+            e.target.classList.add('active');
+            const newRange = e.target.dataset.range;
+            if (newRange === compareChartInstance.currentRange) return;
+
+            compareChartInstance.currentRange = newRange;
+            compareChartInstance.chart.timeScale().applyOptions({
+                tickMarkFormatter: (time) => formatTimeLabel(time, newRange),
             });
-            console.log(`Frontend Log: Populated From/To date dropdowns with ${datesData.dates.length} dates.`);
-        } else {
-            console.warn("Frontend Warning: No available dates found from the server.");
-            document.getElementById('legend').innerHTML = `No dates found. Ensure data directory is correct and contains .csv.gz files.`;
+            fetchAndRenderCompareData();
         }
+    });
+    wrapper.querySelector('.slider').addEventListener('input', handleCompareSliderInput);
+    
+    new ResizeObserver(() => {
+        if (chart && chartContainer) {
+            chart.resize(chartContainer.clientWidth, chartContainer.clientHeight);
+        }
+    }).observe(chartContainer);
+}
+
+function destroyCompareChart() {
+    if (compareChartInstance) {
+        compareChartInstance.wrapper.remove();
+        compareChartInstance = null;
+    }
+}
+
+async function fetchAndRenderCompareData() {
+    handleCompareCrosshairMove(null, `Fetching ${selectedTickers.length} tickers...`);
+    showProgressIndicator(`Fetching ${selectedTickers.length} tickers...`);
+    
+    if (compareChartInstance && compareChartInstance.series) {
+        for (const ticker in compareChartInstance.series) {
+            if (compareChartInstance.series[ticker].price) {
+                compareChartInstance.chart.removeSeries(compareChartInstance.series[ticker].price);
+            }
+            if (compareChartInstance.series[ticker].volume) {
+                compareChartInstance.chart.removeSeries(compareChartInstance.series[ticker].volume);
+            }
+        }
+    }
+    compareChartInstance.series = {};
+    compareChartInstance.allData = {};
+    compareChartInstance.wrapper.querySelector('.window-title').textContent = selectedTickers.join(', ');
+
+    const fetchPromises = selectedTickers.map(ticker => fetchDataForCompare(ticker, compareChartInstance.currentRange));
+    await Promise.all(fetchPromises);
+    hideProgressIndicator();
+    updateCompareChartData();
+}
+
+async function fetchDataForCompare(ticker, range) {
+    const fromDate = document.getElementById('from-date-input').value;
+    const toDate = document.getElementById('to-date-input').value || fromDate;
+    const url = `/one_minute_data_range?ticker=${ticker}&start_date=${fromDate}&end_date=${toDate}&range=${range}&indicators=false`;
+    const cacheKey = `${ticker}-${fromDate}-${toDate}-${range}-compare`;
+    
+    if (dataCache.has(cacheKey)) {
+        compareChartInstance.allData[ticker] = dataCache.get(cacheKey);
+        return;
+    }
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status} for ${ticker}`);
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+        data.timeToDataMap = new Map((data.candlestick || []).map((d, i) => [d.time, { candle: d, volume: data.volume[i] }]));
+        compareChartInstance.allData[ticker] = data;
+        dataCache.set(cacheKey, data);
+    } catch(error) {
+        console.error(`Failed to fetch data for ${ticker}:`, error);
+        compareChartInstance.allData[ticker] = { candlestick: [], volume: [], timeToDataMap: new Map() };
+    }
+}
+
+function updateCompareChartData() {
+    const chart = compareChartInstance.chart;
+    let colorIndex = 0;
+    
+    selectedTickers.forEach(ticker => {
+        const data = compareChartInstance.allData[ticker];
+        if (!data || !data.candlestick || data.candlestick.length === 0) return;
+
+        const color = compareColors[colorIndex % compareColors.length];
+        
+        const priceSeries = chart.addSeries(LightweightCharts.LineSeries, { 
+            color, 
+            lineWidth: 2, 
+            title: ticker 
+        });
+        
+        const volumeSeries = chart.addSeries(LightweightCharts.LineSeries, {
+            color: color,
+            lineWidth: 2,
+            title: `${ticker} Vol`,
+            priceFormat: {
+                type: 'custom',
+                formatter: formatVolume,
+            }
+        }, 1);
+        
+        priceSeries.setData(data.candlestick.map(d => ({ time: d.time, value: d.close })));
+        volumeSeries.setData(data.volume.map(v => ({ time: v.time, value: v.value })));
+
+        compareChartInstance.series[ticker] = { price: priceSeries, volume: volumeSeries, color: color, visible: { price: true, volume: true } };
+        colorIndex++;
+    });
+
+    const slider = compareChartInstance.wrapper.querySelector('.slider');
+    const firstTickerData = Object.values(compareChartInstance.allData)[0]?.candlestick || [];
+    slider.max = firstTickerData.length > 0 ? firstTickerData.length - 1 : 0;
+    slider.value = slider.max;
+
+    chart.timeScale().fitContent();
+}
+
+function handleCompareCrosshairMove(param, overrideMessage = '') {
+    if (!compareChartInstance) return;
+    const legendEl = compareChartInstance.wrapper.querySelector('.header-legend');
+    if (overrideMessage) { legendEl.innerHTML = `<div>${overrideMessage}</div>`; return; }
+    if (!param || !param.time) { legendEl.innerHTML = '<div>Hover for details</div>'; return; }
+    
+    let html = '';
+    for (const ticker in compareChartInstance.series) {
+        const seriesInfo = compareChartInstance.series[ticker];
+        if (!seriesInfo.visible.price && !seriesInfo.visible.volume) continue;
+
+        const fullData = compareChartInstance.allData[ticker]?.timeToDataMap.get(param.time);
+        if (fullData && fullData.candle && fullData.volume) {
+             html += `<div style="color: ${seriesInfo.color};">
+                <strong>${ticker}:</strong>
+                <span>${fullData.candle.close.toFixed(2)}</span>
+                <span style="margin-left: 10px;">V: ${formatVolume(fullData.volume.value)}</span>
+            </div>`;
+        }
+    }
+    legendEl.innerHTML = html || '<div>No data at this time</div>';
+}
+
+function handleCompareSliderInput(event) {
+    const index = parseInt(event.target.value);
+    const firstTicker = Object.keys(compareChartInstance.allData)[0];
+    if (!firstTicker || index < 0) return;
+
+    const firstTickerData = compareChartInstance.allData[firstTicker].candlestick;
+    if (index >= firstTickerData.length && firstTickerData.length > 0) return;
+
+    for (const ticker in compareChartInstance.series) {
+        if(compareChartInstance.allData[ticker] && compareChartInstance.series[ticker]){
+            const priceData = (compareChartInstance.allData[ticker].candlestick || []).slice(0, index + 1).map(d => ({ time: d.time, value: d.close }));
+            const volumeData = (compareChartInstance.allData[ticker].volume || []).slice(0, index + 1).map(v => ({ time: v.time, value: v.value }));
+            compareChartInstance.series[ticker].price.setData(priceData);
+            compareChartInstance.series[ticker].volume.setData(volumeData);
+        }
+    }
+    
+    if(firstTickerData && firstTickerData.length > 0) {
+        const fromTime = firstTickerData[0].time;
+        const toTime = firstTickerData[index]?.time || fromTime;
+        compareChartInstance.chart.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+    }
+}
+
+function toggleCompareSettings(button) {
+    const panel = compareChartInstance.wrapper.querySelector('.settings-panel');
+    const isOpen = panel.style.display === 'flex';
+    panel.style.display = isOpen ? 'none' : 'flex';
+    button.classList.toggle('active', !isOpen);
+    if (!isOpen) populateCompareSettingsPanel();
+}
+
+function populateCompareSettingsPanel() {
+    const panel = compareChartInstance.wrapper.querySelector('.settings-panel');
+    let visibilityHtml = '';
+    for(const ticker in compareChartInstance.series) {
+        const seriesInfo = compareChartInstance.series[ticker];
+        visibilityHtml += `
+            <div class="setting-item">
+                <span style="color:${seriesInfo.color}; font-weight: bold;">${ticker}</span>
+                <div class="compare-visibility-controls">
+                    <label>Price <input type="checkbox" data-ticker="${ticker}" data-type="price" ${seriesInfo.visible.price ? 'checked' : ''}></label>
+                    <label>Volume <input type="checkbox" data-ticker="${ticker}" data-type="volume" ${seriesInfo.visible.volume ? 'checked' : ''}></label>
+                </div>
+            </div>
+        `;
+    }
+
+    panel.innerHTML = `
+        <div class="settings-section">
+            <h4>Series Visibility</h4>
+            ${visibilityHtml}
+        </div>
+    `;
+
+    panel.querySelectorAll('input[type="checkbox"]').forEach(box => {
+        box.addEventListener('change', (e) => {
+            const { ticker, type } = e.target.dataset;
+            const isVisible = e.target.checked;
+            compareChartInstance.series[ticker].visible[type] = isVisible;
+            compareChartInstance.series[ticker][type].applyOptions({ visible: isVisible });
+        });
+    });
+}
+
+// --- Data Handling & Updates (For "Charts" mode) ---
+async function fetchDataForTicker(ticker, range, useSSE = false) {
+    const fromDate = document.getElementById('from-date-input').value;
+    const toDate = document.getElementById('to-date-input').value || fromDate;
+    const instance = chartInstances[ticker];
+    instance.isLoading = true;
+
+    try {
+        handleCrosshairMove(null, ticker, `Fetching ${ticker}...`);
+        
+        const sseParam = (useSSE && clientId) ? `&client_id=${clientId}` : '';
+        const url = `/one_minute_data_range?ticker=${ticker}&start_date=${fromDate}&end_date=${toDate}&range=${range}&indicators=true${sseParam}`;
+        const cacheKey = `${ticker}-${fromDate}-${toDate}-${range}-indicators-true`;
+        
+        if (dataCache.has(cacheKey)) {
+            instance.isLoading = false;
+            updateChartData(ticker, range, dataCache.get(cacheKey));
+            return;
+        }
+
+        const response = await fetch(url);
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: `HTTP error! Status: ${response.status}` }));
+            throw new Error(errorData.error);
+        }
+
+        const data = await response.json();
+        if (data.status === "processing_started") return;
+        if (data.error) throw new Error(data.error);
+        
+        instance.isLoading = false;
+        updateChartData(ticker, range, data);
+        dataCache.set(cacheKey, data);
+
+    } catch (error) {
+        instance.isLoading = false;
+        hideProgressIndicator();
+        handleCrosshairMove(null, ticker, `Error: ${error.message}`);
+    }
+}
+
+function updateChartData(ticker, range, data, isPartial = false) {
+    const instance = chartInstances[ticker];
+    if (!instance) return;
+
+    if (!isPartial) {
+        instance.allData = data;
+        instance.timeToDataMap.clear();
+        (data.candlestick || []).forEach((candle, index) => {
+            const entry = { candle, volume: data.volume[index] };
+            for (const key in data) {
+                if (key !== 'candlestick' && key !== 'volume' && key !== 'status' && key !== 'processed_dates') {
+                    entry[key] = data[key][index];
+                }
+            }
+            instance.timeToDataMap.set(candle.time, entry);
+        });
+    }
+
+    if (instance.mainSeriesType === 'Candlestick') {
+        instance.mainSeries.setData(data.candlestick || []);
+    } else {
+        instance.mainSeries.setData((data.candlestick || []).map(d => ({ time: d.time, value: d.close })));
+    }
+    instance.volumeSeries.setData(data.volume || []);
+    
+    const knownKeys = ['candlestick', 'volume', 'status', 'processed_dates'];
+    for (const name in data) {
+        if (!knownKeys.includes(name) && Array.isArray(data[name])) {
+            if (!instance.activeIndicators[name]) {
+                if (!indicatorDefaults[name]) {
+                    const nextColorIndex = Object.keys(indicatorDefaults).length - 6;
+                    indicatorDefaults[name] = { color: compareColors[nextColorIndex % compareColors.length] };
+                }
+                const color = indicatorDefaults[name].color;
+                
+                // --- THIS IS THE UPDATE FOR REQUESTS 1 & 2 ---
+                const series = instance.chart.addSeries(LightweightCharts.LineSeries, { 
+                    color, 
+                    lineWidth: 1,                 // 1. Thickness one point down
+                    priceScaleId: 'right', 
+                    visible: false, 
+                    // title: name,             // 2. Removed title to hide text label
+                    priceLineVisible: false,    
+                    lastValueVisible: true      // 2. Set to true to show price value
+                });
+                // --- END OF UPDATE ---
+
+                instance.activeIndicators[name] = { series, visible: false };
+            }
+            const seriesData = data[name].filter(p => p.value !== null);
+            instance.activeIndicators[name].series.setData(seriesData);
+        }
+    }
+    
+    if (!isPartial) {
+        const slider = instance.window.querySelector('.slider');
+        const numDataPoints = (data.candlestick || []).length;
+        slider.max = numDataPoints > 0 ? numDataPoints - 1 : 0;
+        slider.value = slider.max;
+        
+        instance.chart.timeScale().fitContent();
+    }
+}
+
+// --- User Interaction & UI Helpers ---
+function handleCrosshairMove(param, ticker, overrideMessage = '') {
+    const instance = chartInstances[ticker];
+    const legendEl = instance.window.querySelector('.header-legend');
+    if(overrideMessage) { legendEl.innerHTML = `<div>${overrideMessage}</div>`; return; }
+    if (!param || !param.time || !param.point) { legendEl.innerHTML = '<div>Hover for details</div>'; return; }
+    const data = instance.timeToDataMap.get(param.time);
+    if (!data?.candle) return;
+    
+    
+    const legendStyle = "font-weight: 600; font-size: 13px;";
+
+    const { candle, volume } = data;
+    let ohlcvHtml = `
+      <span style="${legendStyle}">O:<span style="color:#1976D2;">${candle.open.toFixed(2)}</span></span>
+      <span style="${legendStyle}">H:<span style="color:#26a69a;">${candle.high.toFixed(2)}</span></span>
+      <span style="${legendStyle}">L:<span style="color:#ef5350;">${candle.low.toFixed(2)}</span></span>
+      <span style="${legendStyle}">C:<span style="color:#E64A19;">${candle.close.toFixed(2)}</span></span>
+      <span style="${legendStyle}">V:${formatVolume(volume.value)}</span>`;
+    
+    let indicatorsHtml = '';
+    for (const name in instance.activeIndicators) {
+        if (instance.activeIndicators[name].visible && data[name] && data[name].value !== null) {
+            const color = instance.activeIndicators[name].series.options().color;
+            // Apply style to indicators
+            indicatorsHtml += `<span style="color:${color}; ${legendStyle}">${name}: ${data[name].value.toFixed(2)}</span>`;
+        }
+    }
+    legendEl.innerHTML = `<div>${ohlcvHtml}</div>${indicatorsHtml ? `<div>${indicatorsHtml}</div>` : ''}`;
+    // --- END OF UPDATE ---
+}
+
+function handleSliderInput(event, ticker) {
+    const instance = chartInstances[ticker];
+    const index = parseInt(event.target.value);
+    if (index < 0 || !instance.allData.candlestick) return;
+
+    const candlestickData = instance.allData.candlestick || [];
+    const volumeData = instance.allData.volume || [];
+
+    const visibleCandles = candlestickData.slice(0, index + 1);
+    const visibleVolume = volumeData.slice(0, index + 1);
+
+    if (instance.mainSeriesType === 'Candlestick') {
+        instance.mainSeries.setData(visibleCandles);
+    } else {
+        instance.mainSeries.setData(visibleCandles.map(d => ({ time: d.time, value: d.close })));
+    }
+    instance.volumeSeries.setData(visibleVolume);
+
+    for (const name in instance.activeIndicators) {
+        const indicatorData = (instance.allData[name] || []).slice(0, index + 1).filter(p => p.value !== null);
+        instance.activeIndicators[name].series.setData(indicatorData);
+    }
+    if (visibleCandles.length > 0) {
+        instance.chart.timeScale().setVisibleRange({ from: visibleCandles[0].time, to: visibleCandles[visibleCandles.length - 1].time });
+    } else {
+        instance.chart.timeScale().fitContent();
+    }
+}
+
+function formatTimeLabel(time, range) {
+    const date = new Date(time * 1000);
+    const options = { timeZone: 'America/New_York' };
+    switch(range) {
+        case '1D': return date.toLocaleTimeString('en-US', { ...options, hour: '2-digit', minute: '2-digit' });
+        case 'D': case '1W': return date.toLocaleDateString('en-US', { ...options, month: 'short', day: 'numeric' });
+        case '1M': return date.toLocaleDateString('en-US', { ...options, year: '2-digit', month: 'short' });
+        case '1Y': return date.getFullYear().toString();
+        default: return date.toLocaleDateString('en-US');
+    }
+}
+
+// --- Ticker Selection & Searchable Dropdowns  ---
+function addTicker(ticker) {
+    if (!ticker || selectedTickers.includes(ticker) || selectedTickers.length >= MAX_TICKERS) return;
+    selectedTickers.push(ticker);
+}
+function removeTicker(tickerToRemove) {
+    const index = selectedTickers.indexOf(tickerToRemove);
+    if (index > -1) {
+        selectedTickers.splice(index, 1);
+    }
+}
+
+function setupSearchableDropdown(inputEl, resultsEl, sourceDataFn, onSelect, isTicker = false) {
+    let activeIndex = -1;
+    const filterAndShow = () => {
+        const term = inputEl.value.toUpperCase();
+        const data = sourceDataFn();
+        resultsEl.innerHTML = '';
+
+        if(isTicker) {
+            const selectedContainer = document.createElement('div');
+            selectedContainer.className = 'selected-list';
+            if (selectedTickers.length > 0) {
+                selectedTickers.forEach(t => {
+                    const pill = document.createElement('div');
+                    pill.className = 'ticker-pill';
+                    pill.innerHTML = `<span>${t}</span><button class="remove-ticker" data-ticker="${t}">&times;</button>`;
+                    pill.querySelector('.remove-ticker').addEventListener('mousedown', (e) => {
+                        e.preventDefault();
+                        closeChartWindow(t);
+                        setTimeout(filterAndShow, 50);
+                    });
+                    selectedContainer.appendChild(pill);
+                });
+                resultsEl.appendChild(selectedContainer);
+                resultsEl.appendChild(document.createElement('hr'));
+            }
+        }
+
+        const exactMatch = data.find(item => item.toUpperCase() === term);
+        const startsWith = data.filter(item => item.toUpperCase().startsWith(term) && item.toUpperCase() !== term);
+        const includes = data.filter(item => item.toUpperCase().includes(term) && !item.toUpperCase().startsWith(term));
+        let filtered = term ? [...(exactMatch ? [exactMatch] : []), ...startsWith, ...includes] : data;
+        
+        if (filtered.length === 0 && (!isTicker || selectedTickers.length === 0)) { resultsEl.style.display = 'none'; return; }
+        
+        filtered.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'result-item';
+            div.textContent = item;
+            div.addEventListener('mousedown', () => { onSelect(item); });
+            resultsEl.appendChild(div);
+        });
+        resultsEl.style.display = 'block';
+        activeIndex = -1;
+    };
+    inputEl.addEventListener('input', filterAndShow);
+    inputEl.addEventListener('focus', () => {
+        if(isTicker) inputEl.value = '';
+        filterAndShow();
+    });
+    inputEl.addEventListener('blur', () => setTimeout(() => { 
+        resultsEl.style.display = 'none';
+    }, 150));
+    inputEl.addEventListener('keydown', (e) => {
+        const items = resultsEl.querySelectorAll('.result-item');
+        if (items.length === 0) return;
+        if (e.key === 'ArrowDown') { activeIndex = Math.min(activeIndex + 1, items.length - 1); } 
+        else if (e.key === 'ArrowUp') { activeIndex = Math.max(activeIndex - 1, 0); } 
+        else if (e.key === 'Enter' && activeIndex > -1) { e.preventDefault(); items[activeIndex].dispatchEvent(new Event('mousedown')); }
+        items.forEach((item, i) => item.classList.toggle('active', i === activeIndex));
+    });
+}
+async function loadInitialData() {
+    try {
+        const { dates } = await (await fetch('/available_dates')).json();
+        availableDates = dates;
+        const fromInput = document.getElementById('from-date-input');
+        const toInput = document.getElementById('to-date-input');
+        
+        setupSearchableDropdown(fromInput, document.getElementById('from-date-results'), () => availableDates, async (selectedDate) => {
+            fromInput.value = selectedDate;
+            toInput.value = selectedDate;
+            await updateTickerDropdown(selectedDate);
+            document.dispatchEvent(new CustomEvent('datesUpdated'));
+        });
+        
+        setupSearchableDropdown(toInput, document.getElementById('to-date-results'), () => {
+            const fromDate = fromInput.value;
+            return fromDate ? availableDates.filter(d => d >= fromDate) : availableDates;
+        }, (selectedDate) => { toInput.value = selectedDate; });
+
+        const tickerInput = document.getElementById('ticker-input');
+        setupSearchableDropdown(tickerInput, document.getElementById('ticker-results'), () => availableTickers.filter(t => !selectedTickers.includes(t)), (selectedTicker) => {
+            addTicker(selectedTicker);
+            tickerInput.value = '';
+            tickerInput.focus();
+        }, true);
 
         const urlParams = new URLSearchParams(window.location.search);
-        const tickerParam = urlParams.get('ticker');
-        const fromParam = urlParams.get('from');
-        const toParam = urlParams.get('to');
-        const rangeParam = urlParams.get('range');
-
-        if (tickerParam && fromParam) {
-            console.log(`Frontend Log: URL parameters found - Ticker: ${tickerParam}, From: ${fromParam}, To: ${toParam}, Range: ${rangeParam}`);
-            fromDateSelect.value = fromParam;
+        if (urlParams.get('ticker') && urlParams.get('from')) {
+            // CORRECTED: Read the feature from the URL
+            const feature = urlParams.get('feature') || 'Charts';
+            const featureSelect = document.getElementById('feature-select');
             
-            if (datesData.dates.includes(fromParam)) {
-                await updateDependentDropdowns(fromParam); 
-            } else {
-                console.warn(`Frontend Warning: URL fromDate ${fromParam} not found in available dates.`);
-                const initialFromDateForTickers = datesData.dates.length > 0 ? datesData.dates[0] : '';
-                if (initialFromDateForTickers) {
-                    await updateDependentDropdowns(initialFromDateForTickers);
+            if (feature === 'Charts' || feature === 'SeriesCompare') {
+                featureSelect.value = feature;
+                activeFeature = feature;
+                document.getElementById('chart-controls').classList.remove('disabled-controls');
+                
+                fromInput.value = urlParams.get('from');
+                toInput.value = urlParams.get('to') || urlParams.get('from');
+                
+                await updateTickerDropdown(fromInput.value);
+                urlParams.get('ticker').split(',').forEach(t => addTicker(t.trim().toUpperCase()));
+                
+                // Do not update URL again, just fetch
+                if (selectedTickers.length === 0) return alert('Please add at least one ticker.');
+                if(activeFeature === 'Charts') {
+                    selectedTickers.forEach(ticker => { if (!chartInstances[ticker]) createChartWindow(ticker); });
+                    const fetchPromises = selectedTickers.map(ticker => fetchDataForTicker(ticker, chartInstances[ticker].currentRange, true));
+                    Promise.all(fetchPromises);
+                } else if (activeFeature === 'SeriesCompare') {
+                    if (!compareChartInstance) initializeCompareChart();
+                    fetchAndRenderCompareData();
                 }
             }
-
-            document.getElementById('ticker').value = tickerParam;
-            toDateSelect.value = toParam || fromParam;
-            
-            if (rangeParam) {
-                document.querySelectorAll('.range-switcher button').forEach(btn => {
-                    btn.classList.remove('active');
-                    if (btn.getAttribute('data-range') === rangeParam) {
-                        btn.classList.add('active');
-                    }
-                });
-                currentRange = rangeParam;
-            } else {
-                document.querySelector('[data-range="1D"]').classList.add('active');
-                currentRange = '1D';
-            }
-            
-            console.log('Frontend Log: Triggering fetchData from URL parameters.');
-            fetchData(currentRange);
-        } else {
-            console.log('Frontend Log: No URL parameters found. Initializing with defaults.');
-            const initialFromDate = datesData.dates.length > 0 ? datesData.dates[0] : '';
-            if (initialFromDate) {
-                fromDateSelect.value = initialFromDate;
-                await updateDependentDropdowns(initialFromDate);
-            }
-            document.querySelector('[data-range="1D"]').classList.add('active');
-            currentRange = '1D';
         }
-        console.log('Frontend Log: loadInitialData finished.');
-    }
+    } catch(e) { console.error("Could not load initial data", e); }
+}
+async function updateTickerDropdown(date) {
+    if (!date) { availableTickers = []; return; }
+    try {
+        const { tickers } = await (await fetch(`/available_tickers?date=${date}`)).json();
+        availableTickers = tickers;
+    } catch(e){ console.error("Could not update tickers", e); availableTickers = []; }
+}
+
+// --- Utility & UI Functions ---
+function showProgressIndicator(message) { document.getElementById('processing-status').style.display = 'inline'; document.getElementById('processing-status').textContent = message; }
+function hideProgressIndicator() { document.getElementById('processing-status').style.display = 'none'; }
+function updateProgressIndicator(message) { document.getElementById('processing-status').textContent = message; }
+function toggleTheme() {
+    isDarkMode = !isDarkMode;
+    document.body.classList.toggle('dark');
+    document.getElementById('theme-toggle').textContent = isDarkMode ? '☀️' : '🌙';
+    const allInstances = [...Object.values(chartInstances), compareChartInstance].filter(Boolean);
+    allInstances.forEach(instance => {
+        instance.chart.applyOptions({
+            layout: { background: { color: isDarkMode ? '#1a1a1a' : '#ffffff' }, textColor: isDarkMode ? '#ddd' : '#333' },
+            grid: {
+                vertLines: { color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)' },
+                horzLines: { color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)' },
+            },
+            timeScale: { borderColor: isDarkMode ? '#333' : '#D1D4DC' },
+        });
+    });
+}
+
+// --- Main Event Listeners ---
+document.addEventListener('DOMContentLoaded', () => {
+    connectSSE();
+    loadInitialData();
+    interact('.chart-window').draggable({ allowFrom: '.window-header', listeners: { move(event) {
+        const target = event.target, x = (parseFloat(target.getAttribute('data-x')) || 0) + event.dx, y = (parseFloat(target.getAttribute('data-y')) || 0) + event.dy;
+        target.style.transform = `translate(${x}px, ${y}px)`;
+        target.setAttribute('data-x', x); target.setAttribute('data-y', y);
+    }}}).resizable({ edges: { left: true, right: true, bottom: true, top: true }, listeners: { move: function (event) {
+        Object.assign(event.target.style, { width: `${event.rect.width}px`, height: `${event.rect.height}px` });
+        const ticker = event.target.dataset.ticker;
+        if (chartInstances[ticker]) {
+            const container = event.target.querySelector('.chart-container');
+            chartInstances[ticker].chart.resize(container.clientWidth, container.clientHeight);
+        }
+    }}}).on('down', (event) => { event.currentTarget.style.zIndex = ++windowZIndex; });
     
-    async function updateDependentDropdowns(fromDate) {
-        console.log(`Frontend Log: updateDependentDropdowns started for fromDate: ${fromDate}`);
-        const toDateSelect = document.getElementById('to-date');
-        const tickerSelect = document.getElementById('ticker');
-
-        let datesData = { dates: [] };
-        try {
-            const datesResponse = await fetch('/available_dates');
-            if (!datesResponse.ok) {
-                const errorText = await datesResponse.text();
-                throw new Error(`Failed to fetch available dates for dependent update: ${datesResponse.status} - ${errorText}`);
-            }
-            datesData = await datesResponse.json();
-            console.log('Frontend Log: Received datesData for dependent update:', datesData.dates);
-        } catch (error) {
-            console.error('Frontend Error: Error re-loading available dates in updateDependentDropdowns:', error);
-        }
-
-        toDateSelect.innerHTML = '<option value="">To</option>';
-        if (datesData.dates && datesData.dates.length > 0) {
-            datesData.dates.forEach(date => {
-                if (date >= fromDate) {
-                    addOption(toDateSelect, date);
-                }
-            });
-            console.log(`Frontend Log: Populated To date dropdown from ${fromDate}.`);
+    document.getElementById('feature-select').addEventListener('change', (e) => {
+        activeFeature = e.target.value;
+        const controls = document.getElementById('chart-controls');
+        if (activeFeature) {
+            controls.classList.remove('disabled-controls');
         } else {
-            console.warn("Frontend Warning: No available dates for To date dropdown.");
+            controls.classList.add('disabled-controls');
         }
-
-        tickerSelect.innerHTML = '<option value="">Select Ticker</option>';
-        if (fromDate) {
-            let tickersData = { tickers: [] };
-            try {
-                const tickersResponse = await fetch(`/available_tickers?date=${fromDate}`);
-                if (!tickersResponse.ok) {
-                    const errorText = await tickersResponse.text();
-                    throw new Error(`Failed to fetch available tickers: ${tickersResponse.status} - ${errorText}`);
-                }
-                tickersData = await tickersResponse.json();
-                console.log('Frontend Log: Received tickersData:', tickersData.tickers);
-            }
-            catch (error) {
-                console.error('Frontend Error: Error loading available tickers in updateDependentDropdowns:', error);
-            }
-            
-            if (tickersData.tickers && tickersData.tickers.length > 0) {
-                tickersData.tickers.forEach(ticker => addOption(tickerSelect, ticker));
-                console.log(`Frontend Log: Populated Ticker dropdown for date ${fromDate}.`);
-            } else {
-                console.warn(`Frontend Warning: No tickers found for date: ${fromDate}.`);
-            }
-        } 
-        console.log('Frontend Log: updateDependentDropdowns finished.');
-    }
-
-    document.getElementById('from-date').addEventListener('change', async (event) => {
-      console.log('Frontend Log: From Date changed to:', event.target.value);
-      await updateDependentDropdowns(event.target.value);
-      document.getElementById('ticker').value = '';
-      document.getElementById('to-date').value = event.target.value;
-      document.querySelectorAll('.range-switcher button').forEach(btn => {
-        btn.classList.remove('active');
-      });
-      document.querySelector('[data-range="1D"]').classList.add('active');
-      currentRange = '1D';
-      console.log('Frontend Log: From Date change handler finished.');
+        Object.keys(chartInstances).forEach(closeChartWindow);
+        destroyCompareChart();
+        selectedTickers = [];
     });
 
-    function addOption(select, value) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = value;
-      select.appendChild(option);
-    }
+    document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+    document.getElementById('fetch').addEventListener('click', handleFetchButtonClick);
+    if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) toggleTheme();
+});
+</script>
 
-    document.addEventListener('DOMContentLoaded', function() {
-      console.log('Frontend Log: DOMContentLoaded. Initializing application.');
-      enableRangeSwitcher();
-      connectSSE();
-      loadInitialData();
-      
-      const themeToggle = document.getElementById('theme-toggle');
-      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        document.body.style.backgroundColor = '#222';
-        document.querySelector('.controls').style.backgroundColor = 'rgba(34, 34, 34, 0.85)';
-        themeToggle.textContent = '☀️';
-        
-        chart.applyOptions({ 
-          layout: { 
-            background: { type: 'solid', color: '#222' }, 
-            textColor: '#DDD' 
-          },
-          grid: {
-            vertLines: { color: 'rgba(200, 200, 200, 0.2)' },
-            horzLines: { color: 'rgba(200, 200, 200, 0.2)' },
-          },
-          crosshair: {
-            vertLine: {
-              color: 'rgba(200, 200, 200, 0.3)',
-            },
-            horzLine: {
-              color: 'rgba(200, 200, 200, 0.3)',
-            }
-          }
-        });
-      }
-    });
-    window.addEventListener('resize', () => {
-      chart.resize(
-        document.getElementById('chart-container').clientWidth,
-        document.getElementById('chart-container').clientHeight
-      );
-    });
-    const themeToggle = document.addEventListener('click', () => {
-      const isDarkMode = document.body.style.backgroundColor === 'rgb(34, 34, 34)';
-      if (isDarkMode) {
-        document.body.style.backgroundColor = 'white';
-        document.querySelector('.controls').style.backgroundColor = 'rgba(255, 255, 255, 0.85)';
-        chart.applyOptions({ 
-          layout: { 
-            background: { type: 'solid', color: 'white' }, 
-            textColor: 'black' 
-          },
-          grid: {
-            vertLines: { color: 'rgba(100, 100, 100, 0.3)' },
-            horzLines: { color: 'rgba(100, 100, 100, 0.3)' },
-          },
-          crosshair: {
-            vertLine: {
-              color: 'rgba(150, 150, 150, 0.5)',
-            },
-            horzLine: {
-              color: 'rgba(150, 150, 150, 0.5)',
-            }
-          }
-        });
-        themeToggle.textContent = '🌙';
-      } else {
-        document.body.style.backgroundColor = '#222';
-        document.querySelector('.controls').style.backgroundColor = 'rgba(34, 34, 34, 0.85)';
-        chart.applyOptions({ 
-          layout: { 
-            background: { type: 'solid', color: '#222' }, 
-            textColor: '#DDD' 
-          },
-          grid: {
-            vertLines: { color: 'rgba(200, 200, 200, 0.2)' },
-            horzLines: { color: 'rgba(200, 200, 200, 0.2)' },
-          },
-          crosshair: {
-            vertLine: {
-              color: 'rgba(200, 200, 200, 0.3)',
-            },
-            horzLine: {
-              color: 'rgba(200, 200, 200, 0.3)',
-            }
-          }
-        });
-        themeToggle.textContent = '☀️';
-      }
-    });
-  </script>
 </body>
 </html>
