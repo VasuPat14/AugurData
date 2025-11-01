@@ -5,31 +5,27 @@ import time
 import queue
 import threading
 import sys
-from concurrent.futures import ProcessPoolExecutor
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context, redirect, url_for, make_response
 import pytz
 import statistics
-from pathlib import Path
 import filelock
-from waitress import serve
 
 app = Flask(__name__)
 
 sse_clients = {}
+sse_clients_lock = threading.Lock()
 DATA_DIR = None
 ONE_MIN_DIR = None
-SPECIAL_LINK = None
 SERVER_CACHE = {}
-
 file_locks = {}
+
 def get_file_lock(file_path):
     if file_path not in file_locks:
         lock_file_path = f"{file_path}.applock"
         file_locks[file_path] = filelock.FileLock(lock_file_path, timeout=5)
     return file_locks[file_path]
-
 
 def get_data_directory():
     global DATA_DIR, ONE_MIN_DIR
@@ -45,7 +41,7 @@ def get_data_directory():
         
     while True:
         print("Enter the path to your data directory containing CSV.GZ files:")
-        print("Example: U:\\1min\\data")
+        print("Example: L:\\minutes")
         
         user_dir = input("> ").strip()
         
@@ -58,67 +54,6 @@ def get_data_directory():
 
 get_data_directory()
 
-def validate_data_exists(ticker, from_date_str, to_date_str):
-    print("Validating input...")
-    
-    all_files = find_csv_gz_files(ONE_MIN_DIR)
-    target_file_name = f"{from_date_str}.csv.gz"
-    target_file_path = None
-
-    for file_path in all_files:
-        if os.path.basename(file_path) == target_file_name:
-            target_file_path = file_path
-            break
-            
-    if not target_file_path:
-        print(f"VALIDATION FAILED: Data file for from_date '{from_date_str}' not found.")
-        return False
-        
-    try:
-        with gzip.open(target_file_path, "rt") as f:
-            next(f)
-            for line in f:
-                fields = line.strip().split(',')
-                if fields and fields[0].strip() == ticker:
-                    return True
-    except Exception as e:
-        print(f"VALIDATION ERROR: Could not read file {target_file_path}: {str(e)}")
-        return False
-        
-    return False
-
-def preload_data(ticker, from_date_str, to_date_str):
-    print(f"BACKGROUND: Starting data pre-loading for {ticker} from {from_date_str} to {to_date_str}")
-    
-    start_dt = datetime.strptime(from_date_str, "%Y-%m-%d")
-    end_dt = datetime.strptime(to_date_str, "%Y-%m-%d")
-
-    files_to_process = []
-    for file_path in find_csv_gz_files(ONE_MIN_DIR):
-        try:
-            file_date = datetime.strptime(os.path.basename(file_path).replace(".csv.gz", ""), "%Y-%m-%d")
-            if start_dt <= file_date <= end_dt:
-                files_to_process.append(file_path)
-        except ValueError:
-            continue
-            
-    if not files_to_process:
-        print(f"BACKGROUND: No files found for the specified date range.")
-        return
-
-    results = process_files_chronologically(sorted(files_to_process), ticker, '1D', 'background_loader', start_dt, end_dt)
-    
-    if not results:
-        print(f"BACKGROUND: Pre-loading failed. No data was processed for {ticker}.")
-        return
-        
-    combined_data = combine_results_in_order(results)
-    
-    cache_key = f"{ticker}-{from_date_str}-{to_date_str}-1D"
-    SERVER_CACHE[cache_key] = combined_data
-    print(f"BACKGROUND: Minute data for {ticker} from {from_date_str} to {to_date_str} has been cached.")
-
-
 def convert_epoch_to_ny_time(epoch_ns):
     try:
         epoch_seconds = epoch_ns / 1_000_000_000
@@ -126,223 +61,95 @@ def convert_epoch_to_ny_time(epoch_ns):
         ny_tz = pytz.timezone('America/New_York')
         ny_time = utc_time.astimezone(ny_tz)
         return int(ny_time.timestamp())
-    except Exception as e:
+    except Exception:
         return None
 
 def find_csv_gz_files(directory):
     csv_gz_files = []
-    for root, dirs, files in os.walk(directory):
+    for root, _, files in os.walk(directory):
         for file in files:
             if file.endswith(".csv.gz"):
                 csv_gz_files.append(os.path.join(root, file))
     return csv_gz_files
 
-def calculate_and_add_vwap(file_path, ticker):
-    file_lock = get_file_lock(file_path)
-    
+def process_single_file(file_path, ticker, include_indicators):
+    print(f"SERVER LOG: Processing {os.path.basename(file_path)} for {ticker}")
     try:
-        with file_lock:
-            with gzip.open(file_path, "rt") as f:
-                lines = f.readlines()
-
-            if not lines:
-                return False
-
-            header_line = lines[0].strip()
-            header_fields = header_line.split(',')
-            
-            file_has_vwap_column = 'VWAP' in header_fields
-            vwap_index = header_fields.index('VWAP') if file_has_vwap_column else len(header_fields)
-
-            ticker_data_for_calc = []
-            lines_to_keep_original = {} 
-            
-            ticker_has_vwap_data_in_file = False
-            for i, line in enumerate(lines[1:]):
-                fields = line.strip().split(',')
-                if not fields or fields[0] != ticker or len(fields) <= 6:
-                    lines_to_keep_original[i + 1] = line
-                    continue
-
-                if file_has_vwap_column and vwap_index < len(fields) and fields[vwap_index].strip():
-                    ticker_has_vwap_data_in_file = True
-                    lines_to_keep_original[i + 1] = line
-                else:
-                    try:
-                        timestamp = int(fields[6])
-                        open_price = float(fields[2])
-                        close_price = float(fields[3])
-                        high_price = float(fields[4])
-                        low_price = float(fields[5])
-                        volume = float(fields[1])
-                        
-                        ticker_data_for_calc.append({
-                            'line_index': i + 1,
-                            'fields': fields,
-                            'timestamp': timestamp,
-                            'open': open_price,
-                            'close': close_price,
-                            'high': high_price,
-                            'low': low_price,
-                            'volume': volume
-                        })
-                    except (ValueError, IndexError) as e:
-                        lines_to_keep_original[i + 1] = line
-                        continue
-            
-            if ticker_has_vwap_data_in_file:
-                return True
-
-            if not ticker_data_for_calc:
-                return False
-
-            ticker_data_for_calc.sort(key=lambda x: x['timestamp'])
-            
-            cumulative_tp_volume = 0
-            cumulative_volume = 0
-            vwap_values = {}
-            
-            for point in ticker_data_for_calc:
-                typical_price = (point['high'] + point['low'] + point['close']) / 3
-                cumulative_tp_volume += typical_price * point['volume']
-                cumulative_volume += point['volume']
-                
-                if cumulative_volume > 0:
-                    vwap = cumulative_tp_volume / cumulative_volume
-                else:
-                    vwap = typical_price
-                
-                vwap_values[point['timestamp']] = vwap
-
-            new_lines_content = []
-            if not file_has_vwap_column:
-                new_lines_content.append(header_line + ',VWAP\n')
-            else:
-                new_lines_content.append(header_line + '\n')
-
-            for i, original_line in enumerate(lines[1:]):
-                line_index_in_file = i + 1
-                
-                if line_index_in_file in lines_to_keep_original:
-                    new_lines_content.append(lines_to_keep_original[line_index_in_file])
-                else:
-                    fields = original_line.strip().split(',')
-                    try:
-                        timestamp = int(fields[6])
-                        if timestamp in vwap_values:
-                            while len(fields) <= vwap_index:
-                                fields.append('')
-                            
-                            fields[vwap_index] = str(vwap_values[timestamp])
-                            new_lines_content.append(','.join(fields) + '\n')
-                        else:
-                            new_lines_content.append(original_line)
-                    except (ValueError, IndexError):
-                        new_lines_content.append(original_line)
-
-            with gzip.open(file_path, "wt") as f_out:
-                f_out.writelines(new_lines_content)
-            
-            print(f"SERVER LOG: VWAP calculated and file updated for {ticker} in {os.path.basename(file_path)}")
-            return True
-        
-    except filelock.Timeout:
-        print(f"SERVER LOG: File {file_path} is locked by another process. Skipping VWAP calculation for this file.")
-        return True
-    except Exception as e:
-        print(f"SERVER ERROR: Error calculating VWAP for {ticker} in {file_path}: {str(e)}")
-        return False
-    finally:
-        pass
-
-
-def process_single_file(file_path, ticker):
-    print(f"SERVER LOG: Processing file {os.path.basename(file_path)} for ticker {ticker}")
-    try:
-        vwap_success = calculate_and_add_vwap(file_path, ticker)
-        
-        if not vwap_success:
-            return {"status": "error", "message": f"Failed to ensure VWAP for {ticker} in {file_path}"}
-            
         candlestick_data = []
         volume_data = []
-        vwap_data = []
         
         with gzip.open(file_path, "rt") as f:
             header = next(f).strip().split(',')
-            has_vwap = 'VWAP' in header
-            vwap_index = header.index('VWAP') if has_vwap else -1
+            
+            # Dynamically identify indicator columns (any column after the 7th position)
+            indicator_cols = {header[i]: i for i in range(7, len(header))}
+            indicator_data = {name: [] for name in indicator_cols}
 
             for line in f:
                 fields = line.strip().split(',')
-                if len(fields) < 7:
+                if len(fields) < 7 or fields[0] != ticker:
                     continue
 
-                if fields[0] == ticker:
-                    try:
-                        window_start_ns = int(fields[6])
-                        time_in_seconds = convert_epoch_to_ny_time(window_start_ns)
-                        
-                        if time_in_seconds is None:
-                            continue
+                try:
+                    window_start_ns = int(fields[6])
+                    time_in_seconds = convert_epoch_to_ny_time(window_start_ns)
+                    
+                    if time_in_seconds is None:
+                        continue
 
-                        open_price = float(fields[2])
-                        close_price = float(fields[3])
-                        high_price = float(fields[4])
-                        low_price = float(fields[5])
-                        volume_value = float(fields[1])
+                    open_price = float(fields[2])
+                    close_price = float(fields[3])
+                    high_price = float(fields[4])
+                    low_price = float(fields[5])
+                    volume_value = float(fields[1])
 
-                        candlestick_data.append({
-                            "time": time_in_seconds,
-                            "open": open_price,
-                            "high": high_price,
-                            "low": low_price,
-                            "close": close_price,
-                        })
+                    candlestick_data.append({
+                        "time": time_in_seconds,
+                        "open": open_price,
+                        "high": high_price,
+                        "low": low_price,
+                        "close": close_price,
+                    })
 
-                        volume_data.append({
-                            "time": time_in_seconds,
-                            "value": volume_value,
-                            "color": '#26a69a' if close_price >= open_price else '#ef5350',
-                        })
+                    volume_data.append({
+                        "time": time_in_seconds,
+                        "value": volume_value,
+                        "color": '#26a69a' if close_price >= open_price else '#ef5350',
+                    })
 
-                        if has_vwap and vwap_index != -1 and vwap_index < len(fields) and fields[vwap_index]:
+                    # Extract all available indicator/extra columns
+                    for name, idx in indicator_cols.items():
+                        value = None
+                        if idx < len(fields) and fields[idx]:
                             try:
-                                vwap_value = float(fields[vwap_index])
-                                vwap_data.append({
-                                    "time": time_in_seconds,
-                                    "value": vwap_value,
-                                    "exactTime": True
-                                })
-                            except ValueError:
-                                vwap_data.append({
-                                    "time": time_in_seconds,
-                                    "value": None,
-                                    "exactTime": True
-                                })
-                        else:
-                             vwap_data.append({
-                                "time": time_in_seconds,
-                                "value": None,
-                                "exactTime": True
-                            })
+                                value = float(fields[idx])
+                            except (ValueError, IndexError):
+                                value = None
+                        
+                        indicator_data[name].append({
+                            "time": time_in_seconds,
+                            "value": value
+                        })
 
-                    except (ValueError, IndexError) as e:
-                        pass
-        print(f"SERVER LOG: Finished processing file {os.path.basename(file_path)} for ticker {ticker}. Extracted {len(candlestick_data)} points.")
-        return {
+                except (ValueError, IndexError):
+                    continue
+        
+        result = {
             "status": "success",
             "candlestick": candlestick_data,
             "volume": volume_data,
-            "vwap": vwap_data
+            **indicator_data # Unpack all dynamic columns into the result
         }
         
+        print(f"SERVER LOG: Extracted {len(candlestick_data)} points from {os.path.basename(file_path)}")
+        return result
+        
     except Exception as e:
-        print(f"SERVER ERROR: Error extracting data from {os.path.basename(file_path)}: {str(e)}")
+        print(f"SERVER ERROR: Error processing {os.path.basename(file_path)}: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-def process_files_chronologically(file_paths, ticker, range_type_for_partial_updates, client_id, start_dt, end_dt):
-    print(f"SERVER LOG: Starting chronological processing of {len(file_paths)} files for ticker {ticker} and client {client_id}")
+def process_files_chronologically(file_paths, ticker, range_type_for_partial_updates, client_id, start_dt, end_dt, include_indicators):
+    print(f"SERVER LOG: Processing {len(file_paths)} files for {ticker}")
     
     sorted_files = sorted(file_paths)
     max_workers = min(os.cpu_count() or 1, len(sorted_files))
@@ -353,10 +160,10 @@ def process_files_chronologically(file_paths, ticker, range_type_for_partial_upd
     processed_count = 0
     total_count = len(sorted_files)
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for file_path in sorted_files:
-            future = executor.submit(process_single_file, file_path, ticker)
+            future = executor.submit(process_single_file, file_path, ticker, include_indicators)
             file_date = os.path.basename(file_path).replace('.csv.gz', '')
             futures.append((future, file_path, file_date))
         
@@ -379,46 +186,44 @@ def process_files_chronologically(file_paths, ticker, range_type_for_partial_upd
             except Exception as e:
                 processed_count += 1
                 failed_files.append(file_date)
-                send_sse_message(client_id, 'error', {
-                    'file': file_date,
-                    'message': str(e)
-                })
+                send_sse_message(client_id, 'error', {'file': file_date, 'message': str(e)})
     
-    print(f"SERVER LOG: Sending processing summary to client {client_id}.")
     send_sse_message(client_id, 'processing_summary', {
         'total_files': total_count,
         'successful_files': successful_files,
         'failed_files': failed_files
     })
             
-    print(f"SERVER LOG: Chronological processing finished for ticker {ticker}. Successful files: {len(successful_files)}, Failed files: {len(failed_files)}.")
+    print(f"SERVER LOG: Processing complete. Success: {len(successful_files)}, Failed: {len(failed_files)}")
     return results
 
 def combine_results_in_order(results):
-    all_candlesticks = []
-    all_volumes = []
-    all_vwaps = []
-    
-    dates = sorted(results.keys())
-    
-    for date in dates:
-        if results[date]["status"] == "success":
-            all_candlesticks.extend(results[date]["candlestick"])
-            all_volumes.extend(results[date]["volume"])
-            all_vwaps.extend(results[date]["vwap"])
-    
-    all_candlesticks.sort(key=lambda x: x["time"])
-    all_volumes.sort(key=lambda x: x["time"])
-    all_vwaps.sort(key=lambda x: x["time"])
-    
-    print(f"SERVER LOG: Combined results into {len(all_candlesticks)} total data points.")
-    return {
-        "candlestick": all_candlesticks,
-        "volume": all_volumes,
-        "vwap": all_vwaps
-    }
+    if not results:
+        return {"candlestick": [], "volume": []}
 
-def aggregate_data_by_type(data, range_type, data_type, start_date=None, end_date=None):
+    # Dynamically find all data keys (candlestick, volume, and any indicators)
+    all_keys = set()
+    for date in results:
+        if results[date].get("status") == "success":
+            all_keys.update(results[date].keys())
+    
+    combined = {key: [] for key in all_keys if key != "status"}
+
+    for date in sorted(results.keys()):
+        if results[date]["status"] == "success":
+            for key in combined:
+                if key in results[date]:
+                    combined[key].extend(results[date][key])
+    
+    # Sort all data series by time
+    for key in combined:
+        if combined[key] and isinstance(combined[key][0], dict) and 'time' in combined[key][0]:
+            combined[key].sort(key=lambda x: x['time'])
+    
+    print(f"SERVER LOG: Combined {len(combined.get('candlestick', []))} data points.")
+    return combined
+
+def aggregate_data_by_type(data, range_type, data_type):
     if not data:
         return []
         
@@ -431,26 +236,25 @@ def aggregate_data_by_type(data, range_type, data_type, start_date=None, end_dat
         date = datetime.fromtimestamp(data_point['time'], tz=pytz.timezone('America/New_York'))
         
         if range_type == 'D':
-            start_of_day = date.replace(hour=0, minute=0, second=0, microsecond=0)
-            key = f"{start_of_day.year}-{start_of_day.month:02d}-{start_of_day.day:02d}"
-            time_key = int(start_of_day.timestamp())
+            start_of_period = date.replace(hour=0, minute=0, second=0, microsecond=0)
+            key = f"{start_of_period.year}-{start_of_period.month:02d}-{start_of_period.day:02d}"
         elif range_type == '1W':
             weekday = date.weekday()
-            start_of_week = date - timedelta(days=weekday)
-            key = f"{start_of_week.year}-W{start_of_week.isocalendar()[1]}"
-            time_key = int(start_of_week.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+            start_of_period = date - timedelta(days=weekday)
+            key = f"{start_of_period.year}-W{start_of_period.isocalendar()[1]}"
+            start_of_period = start_of_period.replace(hour=0, minute=0, second=0, microsecond=0)
         elif range_type == '1M':
-            start_of_month = date.replace(day=1)
-            key = f"{start_of_month.year}-M{start_of_month.month:02d}"
-            time_key = int(start_of_month.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+            start_of_period = date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            key = f"{start_of_period.year}-M{start_of_period.month:02d}"
         elif range_type == '1Y':
-            start_of_year = date.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            key = f"{start_of_year.year}"
-            time_key = int(start_of_year.timestamp())
+            start_of_period = date.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            key = f"{start_of_period.year}"
         else:
             key = str(data_point['time'])
-            time_key = data_point['time']
+            start_of_period = date
             
+        time_key = int(start_of_period.timestamp())
+        
         if key not in aggregated_data:
             aggregated_data[key] = {
                 'time': time_key,
@@ -464,21 +268,16 @@ def aggregate_data_by_type(data, range_type, data_type, start_date=None, end_dat
                     'high': data_point.get('high', 0),
                     'low': data_point.get('low', float('inf')),
                     'close': data_point.get('close', 0),
-                    'volume': 0,
                 })
-                if aggregated_data[key]['low'] == float('inf') and data_point.get('low') is not None:
-                    aggregated_data[key]['low'] = data_point.get('low', 0)
             elif data_type == 'volume':
                 aggregated_data[key].update({
                     'value': 0,
                     'up_volume': 0,
                     'down_volume': 0,
                 })
-            elif data_type == 'vwap':
+            elif data_type == 'indicator':
                 aggregated_data[key].update({
-                    'value': None,
-                    'vwap_values': [],
-                    'exactTime': True,
+                    'values': [],
                 })
         
         aggregated_data[key]['data_points'].append(data_point)
@@ -492,10 +291,9 @@ def aggregate_data_by_type(data, range_type, data_type, start_date=None, end_dat
             
             if data_point.get('high', 0) > aggregated_data[key]['high']:
                 aggregated_data[key]['high'] = data_point.get('high', 0)
-            if data_point.get('low', float('inf')) < aggregated_data[key]['low'] and data_point.get('low', 0) >= 0:
+            if data_point.get('low', float('inf')) < aggregated_data[key]['low']:
                 aggregated_data[key]['low'] = data_point.get('low', aggregated_data[key]['low'])
                 
-            aggregated_data[key]['volume'] += data_point.get('volume', 0)
         elif data_type == 'volume':
             value = data_point.get('value', 0)
             aggregated_data[key]['value'] += value
@@ -504,9 +302,10 @@ def aggregate_data_by_type(data, range_type, data_type, start_date=None, end_dat
                 aggregated_data[key]['up_volume'] += value
             else:
                 aggregated_data[key]['down_volume'] += value
-        elif data_type == 'vwap':
+        elif data_type == 'indicator':
+            # Industry standard: Use last value for EMA/VWAP in aggregated timeframes
             if 'value' in data_point and data_point['value'] is not None:
-                aggregated_data[key]['vwap_values'].append(data_point['value'])
+                aggregated_data[key]['values'].append(data_point['value'])
     
     result = []
     for key, aggregate in aggregated_data.items():
@@ -517,7 +316,6 @@ def aggregate_data_by_type(data, range_type, data_type, start_date=None, end_dat
                 'high': aggregate['high'],
                 'low': aggregate['low'] if aggregate['low'] != float('inf') else aggregate['open'],
                 'close': aggregate['close'],
-                'volume': aggregate['volume']
             })
         elif data_type == 'volume':
             color = '#26a69a' if aggregate['up_volume'] >= aggregate['down_volume'] else '#ef5350'
@@ -526,60 +324,44 @@ def aggregate_data_by_type(data, range_type, data_type, start_date=None, end_dat
                 'value': aggregate['value'],
                 'color': color
             })
-        elif data_type == 'vwap':
-            if aggregate['vwap_values']:
-                vwap_value = statistics.median(aggregate['vwap_values'])
-            else:
-                vwap_value = None
-                
-            result.append({
-                'time': aggregate['time'],
-                'value': vwap_value,
-                'exactTime': True
-            })
+        elif data_type == 'indicator':
+            # Use the last non-null value
+            value = aggregate['values'][-1] if aggregate['values'] else None
+            result.append({'time': aggregate['time'], 'value': value})
     
     result.sort(key=lambda x: x['time'])
     return result
 
 def aggregate_data(combined_data, range_type, start_dt, end_dt):
-    candlestick_set = [dict(item) for item in combined_data.get("candlestick", [])]
-    volume_set = [dict(item) for item in combined_data.get("volume", [])]
-    vwap_set = [dict(item) for item in combined_data.get("vwap", [])] 
+    candlestick_data = aggregate_data_by_type(combined_data.get("candlestick", []), range_type, 'candlestick')
+    volume_data = aggregate_data_by_type(combined_data.get("volume", []), range_type, 'volume')
     
-    candlestick_data = aggregate_data_by_type(candlestick_set, range_type, 'candlestick', start_dt, end_dt)
-    volume_data = aggregate_data_by_type(volume_set, range_type, 'volume', start_dt, end_dt)
-    vwap_data = aggregate_data_by_type(vwap_set, range_type, 'vwap', start_dt, end_dt)
-    
-    if vwap_data:
-        vwap_map = {vwap['time']: vwap for vwap in vwap_data}
-        aligned_vwap = []
-        
-        for candle in candlestick_data:
-            if candle['time'] in vwap_map:
-                aligned_vwap.append(vwap_map[candle['time']])
-            else:
-                aligned_vwap.append({
-                    'time': candle['time'],
-                    'value': None,
-                    'exactTime': True
-                })
-        vwap_data = aligned_vwap
-    
-    print(f"SERVER LOG: Aggregated data to {range_type} range. Resulting candlesticks: {len(candlestick_data)}.")
-    return {
+    result = {
         "candlestick": candlestick_data,
-        "volume": volume_data,
-        "vwap": vwap_data
+        "volume": volume_data
     }
+    
+    # Dynamically find and aggregate all other (indicator) data series
+    standard_keys = {"candlestick", "volume", "processed_dates", "status"}
+    indicator_keys = [k for k in combined_data.keys() if k not in standard_keys]
+
+    for ind in indicator_keys:
+        indicator_data = aggregate_data_by_type(combined_data[ind], range_type, 'indicator')
+        result[ind] = indicator_data
+    
+    print(f"SERVER LOG: Aggregated to {range_type}, {len(candlestick_data)} candles")
+    return result
 
 @app.route('/sse-connect')
 def sse_connect():
     def event_stream():
         client_queue = queue.Queue()
         client_id = str(time.time())
-        sse_clients[client_id] = client_queue
-        print(f"SERVER LOG: SSE Client Connected: {client_id}")
         
+        with sse_clients_lock:
+            sse_clients[client_id] = client_queue
+        
+        print(f"SERVER LOG: SSE Client Connected: {client_id}")
         yield f"data: {json.dumps({'client_id': client_id, 'type': 'connected'})}\n\n"
         
         try:
@@ -589,25 +371,26 @@ def sse_connect():
                     yield f"data: {json.dumps(message)}\n\n"
                     
                     if message.get('type') == 'complete':
-                        print(f"SERVER LOG: SSE Processing Complete for client {client_id}.")
                         break
                 except queue.Empty:
                     yield ": keepalive\n\n"
         finally:
-            if client_id in sse_clients:
-                del sse_clients[client_id]
-                print(f"SERVER LOG: SSE Client Disconnected: {client_id}")
+            with sse_clients_lock:
+                if client_id in sse_clients:
+                    del sse_clients[client_id]
+            print(f"SERVER LOG: SSE Client Disconnected: {client_id}")
     
-    return Response(stream_with_context(event_stream()), 
-                   mimetype='text/event-stream')
+    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
 def send_sse_message(client_id, message_type, data):
-    if client_id and client_id != 'background_loader' and client_id in sse_clients:
-        sse_clients[client_id].put({
-            'type': message_type,
-            'timestamp': time.time(),
-            'data': data
-        })
+    if client_id and client_id != 'background_loader':
+        with sse_clients_lock:
+            if client_id in sse_clients:
+                sse_clients[client_id].put({
+                    'type': message_type,
+                    'timestamp': time.time(),
+                    'data': data
+                })
 
 def send_progress_update(client_id, file_date, completed, total):
     send_sse_message(client_id, 'progress', {
@@ -617,85 +400,43 @@ def send_progress_update(client_id, file_date, completed, total):
         'percentage': (completed / total) * 100
     })
 
-def send_partial_data_update(client_id, results, range_type=None, start_dt=None, end_dt=None):
+def send_partial_data_update(client_id, results, range_type, start_dt, end_dt):
     if range_type == '1D':
         combined_data = combine_results_in_order(results)
         send_sse_message(client_id, 'partial_data', combined_data)
-        print(f"SERVER LOG: Sent partial data update (1D range, {len(combined_data['candlestick'])} points) to client {client_id}.")
 
-
-def process_files_and_send_updates(files, ticker, requested_range_type, client_id, start_dt, end_dt):
-    print(f"SERVER LOG: Starting background processing thread for client {client_id}, ticker {ticker}, requested range {requested_range_type}.")
+def process_files_and_send_updates(files, ticker, requested_range_type, client_id, start_dt, end_dt, include_indicators):
+    print(f"SERVER LOG: Background processing for {ticker}, range {requested_range_type}")
     try:
-        sorted_files = sorted(files)
-        
-        results = process_files_chronologically(sorted_files, ticker, requested_range_type, client_id, start_dt, end_dt)
+        results = process_files_chronologically(sorted(files), ticker, requested_range_type, client_id, start_dt, end_dt, include_indicators)
         
         if not results:
-            send_sse_message(client_id, 'error', {
-                'message': "No data could be processed successfully for the selected date range"
-            })
-            print(f"SERVER LOG: Background processing failed for client {client_id}: No data processed.")
+            send_sse_message(client_id, 'error', {'message': "No data processed for the selected date range"})
             return
         
         combined_data = combine_results_in_order(results)
         
-        if not combined_data["candlestick"]:
-            send_sse_message(client_id, 'error', {
-                'message': "No valid price data found for the selected ticker and date range"
-            })
-            print(f"SERVER LOG: Background processing failed for client {client_id}: No valid price data.")
+        if not combined_data.get("candlestick"):
+            send_sse_message(client_id, 'error', {'message': "No valid price data found"})
             return
         
         result_dates = sorted(list(results.keys()))
         
-        final_data_to_send = {}
         if requested_range_type != '1D':
-            final_data_to_send = aggregate_data(combined_data, requested_range_type, start_dt, end_dt)
+            final_data = aggregate_data(combined_data, requested_range_type, start_dt, end_dt)
         else:
-            final_data_to_send = combined_data
+            final_data = combined_data
         
-        final_data_to_send["processed_dates"] = result_dates
-        send_sse_message(client_id, 'complete', final_data_to_send)
-        print(f"SERVER LOG: Final data (range: {requested_range_type}, points: {len(final_data_to_send['candlestick'])}) sent to client {client_id}.")
+        final_data["processed_dates"] = result_dates
+        send_sse_message(client_id, 'complete', final_data)
+        print(f"SERVER LOG: Final data sent to {client_id}")
             
     except Exception as e:
-        print(f"SERVER ERROR: Unhandled exception in background processing thread for client {client_id}: {str(e)}")
-        send_sse_message(client_id, 'error', {
-            'message': f"An unexpected server error occurred: {str(e)}"
-        })
+        print(f"SERVER ERROR: Background processing error: {str(e)}")
+        send_sse_message(client_id, 'error', {'message': f"Server error: {str(e)}"})
 
 @app.route("/")
 def index():
-    if SPECIAL_LINK:
-        return f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Chart Link</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f4f4f4; }}
-                .container {{ text-align: center; padding: 20px; border-radius: 8px; background-color: white; box-shadow: 0 44px 8px rgba(0,0,0,0.1); }}
-                h2 {{ color: #333; }}
-                p {{ color: #666; }}
-                a {{ font-size: 1.2em; color: #007bff; text-decoration: none; word-break: break-all;}}
-                a:hover {{ text-decoration: underline; }}
-                .status {{ margin-top: 15px; font-style: italic; color: #555; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h2>A specific chart has been requested.</h2>
-                <p>The server is preparing your data in the background.</p>
-                <p>Click the link below to view the chart:</p>
-                <a href="{SPECIAL_LINK}">{SPECIAL_LINK}</a>
-                <p class="status">The chart will load automatically when the data is ready.</p>
-            </div>
-        </body>
-        </html>
-        """
     return redirect(url_for('chart_page'))
 
 @app.route("/chart")
@@ -704,15 +445,20 @@ def chart_page():
     response.headers['Content-Type'] = 'text/html; charset=utf-8'
     return response
 
+@app.route("/favicon.ico")
+def favicon():
+    return '', 204
+
 @app.route("/one_minute_data_range", methods=["GET"])
 def one_minute_data_range():
-    request_start_time = time.time()
     try:
         start_date = request.args.get("start_date")
         end_date = request.args.get("end_date")
         ticker = request.args.get("ticker", "MSFT")
-        requested_range_type = request.args.get("range", "1D") 
+        requested_range_type = request.args.get("range", "1D")
         client_id = request.args.get("client_id")
+        # The 'indicators' flag is no longer needed but we accept it to avoid breaking the client
+        include_indicators = request.args.get("indicators", "true").lower() == "true"
 
         if not start_date:
             return jsonify({"error": "start_date is required"}), 400
@@ -720,112 +466,91 @@ def one_minute_data_range():
         if not end_date:
             end_date = start_date
 
-        cache_key_requested = f"{ticker}-{start_date}-{end_date}-{requested_range_type}"
+        # Cache key still includes indicator flag to differentiate requests if client sends it
+        cache_key = f"{ticker}-{start_date}-{end_date}-{requested_range_type}-ind{include_indicators}"
         
-        # 1. Check if the EXACT requested range is in cache
-        if cache_key_requested in SERVER_CACHE:
-            print(f"SERVER LOG: Serving {cache_key_requested} from CACHE. (Points: {len(SERVER_CACHE[cache_key_requested]['candlestick'])}). Request served in {time.time() - request_start_time:.2f} seconds.")
-            return jsonify(SERVER_CACHE[cache_key_requested])
+        if cache_key in SERVER_CACHE:
+            print(f"SERVER LOG: Cache hit for {cache_key}")
+            return jsonify(SERVER_CACHE[cache_key])
 
-        # 2. If requested range not in cache, and it's an aggregated range,
-        #    check if the base minute data (1D) is in cache.
-        cache_key_1D_base = f"{ticker}-{start_date}-{end_date}-1D"
-        if requested_range_type != '1D' and cache_key_1D_base in SERVER_CACHE:
-            print(f"SERVER LOG: {cache_key_requested} not in cache. Aggregating from cached 1D base data.")
-            cached_minute_data = SERVER_CACHE[cache_key_1D_base]
+        cache_key_1D = f"{ticker}-{start_date}-{end_date}-1D-ind{include_indicators}"
+        if requested_range_type != '1D' and cache_key_1D in SERVER_CACHE:
+            print(f"SERVER LOG: Aggregating from cached 1D data")
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
             
-            start_dt_obj = datetime.strptime(start_date, "%Y-%m-%d")
-            end_dt_obj = datetime.strptime(end_date, "%Y-%m-%d")
-            
-            aggregated_data = aggregate_data(cached_minute_data, requested_range_type, start_dt_obj, end_dt_obj)
-            
-            # Cache the newly aggregated data for future direct requests
-            SERVER_CACHE[cache_key_requested] = aggregated_data
-            print(f"SERVER LOG: Aggregated and cached {requested_range_type} data from {cache_key_1D_base}. Served in {time.time() - request_start_time:.2f} seconds.")
+            aggregated_data = aggregate_data(SERVER_CACHE[cache_key_1D], requested_range_type, start_dt, end_dt)
+            SERVER_CACHE[cache_key] = aggregated_data
             return jsonify(aggregated_data)
 
-        # 3. If neither the requested aggregated data nor the base minute data is in cache,
-        #    then proceed with file processing (asynchronously via SSE or synchronously).
-        print(f"SERVER LOG: Data for {cache_key_requested} not in cache, and 1D base data not available. Proceeding with file processing.")
-        
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         
-        csv_gz_files = find_csv_gz_files(ONE_MIN_DIR)
         files_to_process = []
-        
-        for file_path in csv_gz_files:
+        for file_path in find_csv_gz_files(ONE_MIN_DIR):
             try:
-                file_name = os.path.basename(file_path)
-                file_date_str = file_name.replace(".csv.gz", "")
-                file_date = datetime.strptime(file_date_str, "%Y-%m-%d")
-                
+                file_date = datetime.strptime(os.path.basename(file_path).replace(".csv.gz", ""), "%Y-%m-%d")
                 if start_dt <= file_date <= end_dt:
                     files_to_process.append(file_path)
-            except Exception as e:
-                print(f"SERVER ERROR: Error parsing file date {file_path}: {str(e)}")
-        
-        files_to_process.sort()
+            except Exception:
+                continue
         
         if not files_to_process:
-            return jsonify({"error": "No data files found for the specified date range."}), 404
+            return jsonify({"error": "No data files found"}), 404
 
-        if client_id in sse_clients: 
+        with sse_clients_lock:
+            client_exists = client_id in sse_clients
+
+        if client_exists:
             thread = threading.Thread(
                 target=process_files_and_send_updates,
-                args=(files_to_process, ticker, requested_range_type, client_id, start_dt, end_dt)
+                args=(files_to_process, ticker, requested_range_type, client_id, start_dt, end_dt, include_indicators)
             )
             thread.daemon = True
             thread.start()
-            print(f"SERVER LOG: Async processing started for {len(files_to_process)} files (client: {client_id}, range: {requested_range_type}). Response time: {time.time() - request_start_time:.2f} seconds (non-blocking).")
-            return jsonify({
-                "status": "processing_started",
-                "files_count": len(files_to_process)
-            })
+            return jsonify({"status": "processing_started", "files_count": len(files_to_process)})
         else:
-            print(f"SERVER LOG: Synchronous processing initiated for {len(files_to_process)} files (range: {requested_range_type}). This will block until complete.")
-            raw_minute_results = process_files_chronologically(files_to_process, ticker, '1D', 'sync_request_no_sse', start_dt, end_dt)
-            combined_minute_data = combine_results_in_order(raw_minute_results)
+            # Synchronous processing for clients not using SSE
+            results = process_files_chronologically(files_to_process, ticker, '1D', 'sync', start_dt, end_dt, include_indicators)
+            combined_data = combine_results_in_order(results)
 
-            final_data = {}
             if requested_range_type != '1D':
-                final_data = aggregate_data(combined_minute_data, requested_range_type, start_dt, end_dt)
+                final_data = aggregate_data(combined_data, requested_range_type, start_dt, end_dt)
             else:
-                final_data = combined_minute_data
+                final_data = combined_data
             
-            SERVER_CACHE[cache_key_requested] = final_data # Cache the result for the requested key
-            print(f"SERVER LOG: Synchronous processing complete for {cache_key_requested}. Total time: {time.time() - request_start_time:.2f} seconds.")
+            SERVER_CACHE[cache_key] = final_data
             return jsonify(final_data)
             
     except Exception as e:
-        print(f"SERVER ERROR: Unhandled exception in one_minute_data_range route: {str(e)}")
+        print(f"SERVER ERROR: {str(e)}")
         return jsonify({"error": f"Failed to load data: {str(e)}"}), 500
 
 @app.route("/available_dates", methods=["GET"])
 def available_dates():
-    request_start_time = time.time()
     try:
         csv_gz_files = find_csv_gz_files(ONE_MIN_DIR)
         dates = [os.path.basename(f).replace(".csv.gz", "") for f in csv_gz_files]
-        print(f"SERVER LOG: Sent {len(dates)} available dates to frontend. Response time: {time.time() - request_start_time:.2f} seconds.")
         return jsonify({"dates": sorted(dates)})
     except Exception as e:
-        print(f"SERVER ERROR: Error fetching available dates: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/available_tickers", methods=["GET"])
 def available_tickers():
-    request_start_time = time.time()
-    date = request.args.get("date", "2016-01-04")
+    date = request.args.get("date")
+    if not date:
+        return jsonify({"error": "Date required"}), 400
+    
     csv_gz_files = find_csv_gz_files(ONE_MIN_DIR)
     file_path = None
     for file in csv_gz_files:
         if date in file:
             file_path = file
             break
+    
     if not file_path:
-        print(f"SERVER LOG: No data file found for date: {date} for ticker lookup.")
-        return jsonify({"error": f"No data found for {date}"}), 404
+        return jsonify({"error": f"No data for {date}"}), 404
+    
     tickers = set()
     try:
         with gzip.open(file_path, "rt") as f:
@@ -834,84 +559,27 @@ def available_tickers():
                 fields = line.strip().split(',')
                 if fields:
                     tickers.add(fields[0])
-        print(f"SERVER LOG: Sent {len(tickers)} available tickers for date {date} to frontend. Response time: {time.time() - request_start_time:.2f} seconds.")
         return jsonify({"tickers": sorted(list(tickers))})
     except Exception as e:
-        print(f"SERVER ERROR: Error reading tickers from {file_path}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-def print_startup_message(port):
-    global SPECIAL_LINK
+if __name__ == "__main__":
+    port = 8000
     print("=" * 60)
-    print("=" * 60)
-    print(f"Working directory: {os.getcwd()}")
     print(f"Data directory: {DATA_DIR}")
     
     if not os.path.exists(DATA_DIR):
         print(f"WARNING: Data directory {DATA_DIR} does not exist!")
     else:
-        csv_gz_count = len(find_csv_gz_files(DATA_DIR))
-        print(f"Found {csv_gz_count} CSV.GZ files in the data directory")
-        
-    if len(sys.argv) >= 4:
-        ticker = sys.argv[1]
-        from_date = sys.argv[2]
-        to_date = sys.argv[3]
-        
-        range_type_map = {
-            "minutes": "1D",
-            "daily": "D",
-            "d": "D", 
-            "w": "1W", 
-            "1w": "1W",
-            "week": "1W", 
-            "month": "1M",
-            "m": "1M", 
-            "1m": "1M",
-            "year": "1Y",
-            "y": "1Y", 
-            "1y": "1Y"
-        }
-        
-        cli_range_arg = sys.argv[4].lower() if len(sys.argv) == 5 else "minutes" 
-        requested_display_range = range_type_map.get(cli_range_arg, "1D") 
-        
-        if validate_data_exists(ticker, from_date, to_date):
-            SPECIAL_LINK = (
-                f"http://localhost:{port}/chart"
-                f"?ticker={ticker}"
-                f"&from={from_date}"
-                f"&to={to_date}"
-                f"&range={requested_display_range}"
-            )
-            print("-" * 60)
-            print("Chart pre-configured with command-line arguments.")
-            print(f"Link: {SPECIAL_LINK}") 
-            
-            preload_thread = threading.Thread(target=preload_data, args=(ticker, from_date, to_date)) 
-            preload_thread.daemon = True
-            preload_thread.start() 
-            print("Minute data is being pre-loaded and cached in the background...") 
-            print("-" * 60)
-        else:
-            print("-" * 60)
-            print("Could not validate data for the provided arguments.")
-            print("Starting server in default mode.")
-            print("-" * 60)
-
-    if not SPECIAL_LINK:
-         print(f"Server running at http://localhost:{port}/chart")
+        csv_count = len(find_csv_gz_files(DATA_DIR))
+        print(f"Found {csv_count} CSV.GZ files")
     
+    print(f"Server starting on http://localhost:{port}/chart")
     print("=" * 60)
-
-if __name__ == "__main__":
-    port = 8000
-    print_startup_message(port)
     
-    print(f"Running server on port {port}")
     try:
+        from waitress import serve
         serve(app, host="0.0.0.0", port=port)
     except Exception as e:
-        print(f"SERVER CRITICAL ERROR: Waitress server failed to start or crashed: {str(e)}")
+        print(f"SERVER ERROR: {str(e)}")
         sys.exit(1)
-
